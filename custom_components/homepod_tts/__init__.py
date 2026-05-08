@@ -36,7 +36,7 @@ SERVICE_SAY_SCHEMA = vol.Schema(
             vol.Coerce(int), vol.Range(min=-5000, max=5000)
         ),
         vol.Optional(ATTR_PROMPT): cv.string,
-        vol.Optional(ATTR_SPEAKER): cv.entity_id,
+        vol.Optional(ATTR_SPEAKER): vol.Any(cv.entity_id, [cv.entity_id]),
         vol.Optional(ATTR_CHIME_VOLUME): vol.All(
             vol.Coerce(float), vol.Range(min=0.0, max=2.0)
         ),

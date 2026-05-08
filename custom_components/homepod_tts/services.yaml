@@ -25,13 +25,14 @@ say:
       selector:
         text:
     speaker:
-      name: Speaker
-      description: Target a different HomePod (apple_tv media_player entity). Overrides the default speaker.
+      name: Speaker(s)
+      description: Target one or more HomePods (apple_tv media_player entities). Overrides the default speaker. Multiple speakers play in parallel.
       required: false
       selector:
         entity:
           integration: apple_tv
           domain: media_player
+          multiple: true
     chime:
       name: Chime
       description: Play chime before announcement (overrides default).
