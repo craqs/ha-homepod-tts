@@ -2,7 +2,10 @@ import asyncio
 import contextlib
 import logging
 import os
+import re
+import shutil
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +31,7 @@ from .const import (
     CONF_CACHE_ENABLED,
     CONF_CACHE_MAX_MB,
     CONF_CHIME_ENABLED,
+    CONF_DEFAULT_SPEAKERS,
     CONF_CHIME_OFFSET,
     CONF_CHIME_PATH,
     CONF_CHIME_VOLUME,
@@ -35,6 +39,12 @@ from .const import (
     CONF_DEFAULT_VOLUME,
     CONF_GEMINI_API_KEY,
     CONF_HOMEPOD_IDENTIFIER,
+    CONF_MUTE_ENTITY,
+    CONF_QUIET_CHIME_VOLUME,
+    CONF_QUIET_ENTITY,
+    CONF_QUIET_PROMPT,
+    CONF_QUIET_SPEAKERS,
+    CONF_QUIET_VOLUME,
     CONF_RESTORE_VOLUME,
     CONF_TTS_MODEL,
     CONF_TTS_PROMPT,
@@ -45,6 +55,9 @@ from .const import (
     DEFAULT_CHIME_OFFSET,
     DEFAULT_CHIME_VOLUME,
     DEFAULT_COMPRESS_TTS,
+    DEFAULT_QUIET_CHIME_VOLUME,
+    DEFAULT_QUIET_PROMPT,
+    DEFAULT_QUIET_VOLUME,
     DEFAULT_RESTORE_VOLUME,
     DEFAULT_TTS_MODEL,
     DEFAULT_TTS_PROMPT,
@@ -57,6 +70,51 @@ from .tts_client import GeminiTTSClient
 _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CHIME_FILE = str(Path(__file__).parent / "sounds" / "chime.mp3")
+
+# ── Music injection parsing ───────────────────────────────────────────────────
+# Syntax: [music: <prompt>]
+# Example: "Hello! [music: upbeat jazz piano, 30 seconds]"
+_MUSIC_RE = re.compile(r"\[music:\s*(.+?)\]", re.DOTALL | re.IGNORECASE)
+
+
+def _parse_music_injection(
+    message: str,
+) -> tuple[str, str | None, str]:
+    """Parse [music: prompt] marker from message.
+
+    Returns:
+        (clean_message, music_prompt_or_None, music_position)
+        music_position is "before" or "after" (relative to TTS content).
+    """
+    match = _MUSIC_RE.search(message)
+    if not match:
+        return message, None, "after"
+
+    music_prompt = match.group(1).strip()
+    start, end = match.span()
+    text_before = message[:start].strip()
+    text_after = message[end:].strip()
+
+    if not text_before:
+        # Marker at the very start → music plays before TTS
+        clean_message = text_after
+        position = "before"
+    else:
+        # Marker at the end (or middle — append any trailing text)
+        clean_message = text_before
+        if text_after:
+            clean_message += " " + text_after
+        position = "after"
+
+    return clean_message, music_prompt, position
+
+# Directory under /config/www/ for serving WAVs to Music Assistant
+MA_SERVE_DIR = "homepod_tts"
+
+
+def _write_bytes(path: str, data: bytes) -> None:
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 async def async_setup_entry(
@@ -139,6 +197,50 @@ class HomePodTTSNotifyEntity(NotifyEntity):
     def _cache_max_mb(self) -> int:
         return self._entry.options.get(CONF_CACHE_MAX_MB, DEFAULT_CACHE_MAX_MB)
 
+    @property
+    def _default_speakers(self) -> list[str]:
+        return self._entry.options.get(CONF_DEFAULT_SPEAKERS, [])
+
+    @property
+    def _mute_entity(self) -> str:
+        return self._entry.options.get(CONF_MUTE_ENTITY, "")
+
+    @property
+    def _quiet_entity(self) -> str:
+        return self._entry.options.get(CONF_QUIET_ENTITY, "")
+
+    @property
+    def _quiet_prompt(self) -> str:
+        return self._entry.options.get(CONF_QUIET_PROMPT, DEFAULT_QUIET_PROMPT)
+
+    @property
+    def _quiet_chime_volume(self) -> float:
+        return self._entry.options.get(
+            CONF_QUIET_CHIME_VOLUME, DEFAULT_QUIET_CHIME_VOLUME
+        )
+
+    @property
+    def _quiet_volume(self) -> float:
+        return self._entry.options.get(CONF_QUIET_VOLUME, DEFAULT_QUIET_VOLUME)
+
+    @property
+    def _quiet_speakers(self) -> list[str]:
+        return self._entry.options.get(CONF_QUIET_SPEAKERS, [])
+
+    def _is_muted(self) -> bool:
+        """Check if the mute entity is on."""
+        if not self._mute_entity:
+            return False
+        state = self._hass.states.get(self._mute_entity)
+        return state is not None and state.state == "on"
+
+    def _is_quiet(self) -> bool:
+        """Check if the quiet mode entity is on."""
+        if not self._quiet_entity:
+            return False
+        state = self._hass.states.get(self._quiet_entity)
+        return state is not None and state.state == "on"
+
     # -- TTS client --
 
     def _get_tts_client(self) -> GeminiTTSClient:
@@ -153,7 +255,178 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             )
         return self._tts_client
 
-    # -- pyatv connections --
+    # -- Music Assistant speaker resolution --
+
+    def _has_music_assistant(self) -> bool:
+        """Check if Music Assistant is available."""
+        return self._hass.services.has_service(
+            "music_assistant", "play_announcement"
+        )
+
+    def _build_mac_to_ma_map(self) -> dict[str, str]:
+        """Build a MAC-address -> MA entity_id mapping.
+
+        MA entities expose an ``active_queue`` attribute formatted as
+        ``ap<mac_lowercase>`` (e.g. ``ap067b90602db2``).  Apple TV config
+        entries store identifiers as MAC addresses (``06:7B:90:60:2D:B2``).
+        Normalising both to lowercase-no-colon gives a deterministic match.
+        """
+        mac_map: dict[str, str] = {}
+        for state in self._hass.states.async_all("media_player"):
+            queue_id = state.attributes.get("active_queue", "")
+            if (
+                state.attributes.get("mass_player_type")
+                and isinstance(queue_id, str)
+                and queue_id.startswith("ap")
+            ):
+                mac_norm = queue_id[2:]  # strip "ap" prefix
+                mac_map[mac_norm] = state.entity_id
+        return mac_map
+
+    def _resolve_ma_speakers(
+        self, speaker: str | list[str] | None
+    ) -> list[str]:
+        """Resolve speaker field to MA media_player entity_ids."""
+        mac_map = self._build_mac_to_ma_map()
+        ma_entity_ids = set(mac_map.values())
+
+        if not speaker:
+            if self._default_speakers:
+                # Default speakers are stored as apple_tv identifiers (MACs)
+                result: list[str] = []
+                for identifier in self._default_speakers:
+                    resolved = self._find_ma_entity_by_mac(
+                        identifier, mac_map
+                    )
+                    result.extend(resolved)
+                if result:
+                    _LOGGER.debug(
+                        "Using configured default speakers: %s", result
+                    )
+                    return result
+            # Fallback to the single configured HomePod
+            return self._find_ma_entity_by_mac(
+                self._identifier, mac_map
+            )
+
+        if isinstance(speaker, str):
+            speaker = [speaker]
+
+        result: list[str] = []
+        for s in speaker:
+            if s in ma_entity_ids:
+                # Already an MA entity
+                result.append(s)
+            elif ":" in s or (len(s) == 12 and s.isalnum()):
+                # Looks like a MAC address (apple_tv identifier)
+                resolved = self._find_ma_entity_by_mac(s, mac_map)
+                result.extend(resolved)
+            else:
+                # apple_tv media_player -> look up its config entry MAC
+                resolved = self._find_ma_entity_for_atv(s, mac_map)
+                result.extend(resolved)
+
+        # Deduplicate preserving order
+        seen: set[str] = set()
+        unique: list[str] = []
+        for r in result:
+            if r not in seen:
+                seen.add(r)
+                unique.append(r)
+        return unique
+
+    def _find_ma_entity_by_mac(
+        self, identifier: str, mac_map: dict[str, str]
+    ) -> list[str]:
+        """Find MA entity for an apple_tv identifier (MAC address)."""
+        mac_norm = identifier.replace(":", "").lower()
+        entity_id = mac_map.get(mac_norm)
+        if entity_id:
+            _LOGGER.debug(
+                "Matched MA entity %s for MAC %s", entity_id, identifier
+            )
+            return [entity_id]
+        _LOGGER.warning("No MA entity found for MAC %s", identifier)
+        return []
+
+    def _find_ma_entity_for_atv(
+        self, atv_entity_id: str, mac_map: dict[str, str]
+    ) -> list[str]:
+        """Find MA entity matching an apple_tv media_player entity."""
+        entity_registry = er.async_get(self._hass)
+        entity_entry = entity_registry.async_get(atv_entity_id)
+        if entity_entry and entity_entry.config_entry_id:
+            apple_tv_entries = self._hass.config_entries.async_entries(
+                "apple_tv"
+            )
+            for atv_entry in apple_tv_entries:
+                if atv_entry.entry_id == entity_entry.config_entry_id:
+                    uid = atv_entry.unique_id or ""
+                    return self._find_ma_entity_by_mac(uid, mac_map)
+
+        _LOGGER.warning(
+            "Could not resolve apple_tv entry for %s", atv_entity_id
+        )
+        return []
+
+    # -- Music Assistant transport --
+
+    async def _async_play_via_ma(
+        self,
+        wav_path: str,
+        speakers: list[str],
+        volume: float,
+    ) -> str:
+        """Play WAV via Music Assistant. Returns the served file path."""
+        # Ensure the www/homepod_tts directory exists
+        www_dir = Path(self._hass.config.path("www")) / MA_SERVE_DIR
+        www_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy WAV to www directory with unique name
+        filename = f"tts_{uuid.uuid4().hex[:12]}.wav"
+        served_path = www_dir / filename
+        await self._hass.async_add_executor_job(
+            shutil.copy2, wav_path, str(served_path)
+        )
+
+        # Build the local URL
+        base_url = self._hass.config.internal_url or self._hass.config.external_url
+        if not base_url:
+            # Fallback: construct from HA config
+            base_url = "http://homeassistant.local:8123"
+        url = f"{base_url}/local/{MA_SERVE_DIR}/{filename}"
+
+        _LOGGER.debug(
+            "Playing via Music Assistant: %s -> %s", url, speakers
+        )
+
+        # Target all speakers in a single call so MA can coordinate
+        # AirPlay 2 synchronized playback across devices
+        service_data: dict[str, Any] = {
+            "url": url,
+            "use_pre_announce": False,
+        }
+        if volume is not None:
+            service_data["announce_volume"] = int(volume * 100)
+        await self._hass.services.async_call(
+            "music_assistant",
+            "play_announcement",
+            service_data,
+            target={"entity_id": speakers},
+            blocking=True,
+        )
+
+        # Schedule cleanup of the served file after a delay
+        async def _cleanup() -> None:
+            await asyncio.sleep(60)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(str(served_path))
+
+        self._hass.async_create_task(_cleanup())
+
+        return str(served_path)
+
+    # -- pyatv connections (fallback) --
 
     def _resolve_speaker_identifier(
         self, speaker_entity_id: str | None
@@ -177,7 +450,7 @@ class HomePodTTSNotifyEntity(NotifyEntity):
         )
         return self._identifier
 
-    def _resolve_speakers(
+    def _resolve_speakers_pyatv(
         self, speaker: str | list[str] | None
     ) -> list[str]:
         """Resolve speaker field to a list of apple_tv identifiers."""
@@ -185,7 +458,6 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             return [self._identifier]
         if isinstance(speaker, str):
             speaker = [speaker]
-        # Deduplicate while preserving order
         seen: set[str] = set()
         result: list[str] = []
         for s in speaker:
@@ -239,15 +511,13 @@ class HomePodTTSNotifyEntity(NotifyEntity):
                 atv.close()
             self._connections.clear()
 
-    # -- single-device streaming --
-
     async def _async_stream_to_device(
         self,
         identifier: str,
         tmp_path: str,
         volume: float,
     ) -> None:
-        """Stream WAV to a single HomePod. Handles volume set/restore."""
+        """Stream WAV to a single HomePod via pyatv."""
         previous_volume: float | None = None
         try:
             atv = await self._async_get_connection(identifier)
@@ -295,7 +565,13 @@ class HomePodTTSNotifyEntity(NotifyEntity):
         prompt: str | None = None,
         speaker: str | list[str] | None = None,
         chime_volume: float | None = None,
+        quiet: bool | None = None,
     ) -> None:
+        # -- Mute check --
+        if self._is_muted():
+            _LOGGER.debug("Muted by %s, ignoring TTS call", self._mute_entity)
+            return
+
         if chime is None:
             chime = self._chime_enabled
         if volume is None:
@@ -308,30 +584,85 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             chime_volume = self._chime_volume
 
         effective_prompt = prompt if prompt is not None else self._default_prompt
-        target_identifiers = self._resolve_speakers(speaker)
+
+        # -- Quiet mode --
+        is_quiet = quiet if quiet is not None else self._is_quiet()
+        if is_quiet:
+            effective_prompt = self._quiet_prompt
+            chime_volume = self._quiet_chime_volume
+            volume = self._quiet_volume
+            # Override speakers if quiet speakers configured and no explicit speaker
+            if not speaker and self._quiet_speakers:
+                speaker = self._quiet_speakers
+                _LOGGER.debug(
+                    "Quiet mode: using quiet speakers %s", speaker
+                )
+            _LOGGER.debug("Quiet mode active")
+        use_ma = self._has_music_assistant()
+
+        # Parse music injection marker [music: prompt] from message
+        clean_message, music_prompt, music_position = _parse_music_injection(message)
+        if music_prompt:
+            _LOGGER.debug(
+                "Music injection detected: prompt=%r position=%s",
+                music_prompt, music_position,
+            )
 
         async with self._lock:
             tmp_path = None
+            tmp_music_path = None
             try:
                 tts_client = self._get_tts_client()
 
-                # Check cache
+                # Check cache (keyed on the clean message without music marker)
                 key = cache_key(
-                    message, tts_client.voice, tts_client.model,
+                    clean_message, tts_client.voice, tts_client.model,
                     effective_prompt,
                 )
                 tts_pcm = None
                 if self._cache_enabled:
-                    tts_pcm = get_cached(self._hass, key)
+                    tts_pcm = await get_cached(self._hass, key)
 
-                if tts_pcm is None:
-                    _LOGGER.debug("Synthesizing TTS for: %s", message)
-                    tts_pcm = await tts_client.synthesize(
-                        message, prompt=effective_prompt or None
+                # Fire TTS synthesis and music generation concurrently
+                if tts_pcm is None and music_prompt:
+                    _LOGGER.debug(
+                        "Synthesizing TTS + generating music concurrently"
+                    )
+                    tts_pcm, music_bytes = await asyncio.gather(
+                        tts_client.synthesize(
+                            clean_message, prompt=effective_prompt or None
+                        ),
+                        tts_client.generate_music(music_prompt),
                     )
                     if self._cache_enabled:
-                        put_cache(self._hass, key, tts_pcm)
-                        enforce_max_size(self._hass, self._cache_max_mb)
+                        await put_cache(self._hass, key, tts_pcm)
+                        await enforce_max_size(self._hass, self._cache_max_mb)
+                elif tts_pcm is None:
+                    _LOGGER.debug("Synthesizing TTS for: %s", clean_message)
+                    tts_pcm = await tts_client.synthesize(
+                        clean_message, prompt=effective_prompt or None
+                    )
+                    music_bytes = None
+                    if self._cache_enabled:
+                        await put_cache(self._hass, key, tts_pcm)
+                        await enforce_max_size(self._hass, self._cache_max_mb)
+                else:
+                    # Cache hit for TTS — still need to generate music if requested
+                    if music_prompt:
+                        _LOGGER.debug("TTS cache hit; generating music separately")
+                        music_bytes = await tts_client.generate_music(music_prompt)
+                    else:
+                        music_bytes = None
+
+                # Save music to temp file if we have it
+                if music_bytes:
+                    fd_m, tmp_music_path = tempfile.mkstemp(
+                        suffix=".mp3", prefix="homepod_music_"
+                    )
+                    os.close(fd_m)
+                    await self._hass.async_add_executor_job(
+                        _write_bytes, tmp_music_path, music_bytes
+                    )
 
                 fd, tmp_path = tempfile.mkstemp(
                     suffix=".wav", prefix="homepod_tts_"
@@ -347,24 +678,44 @@ class HomePodTTSNotifyEntity(NotifyEntity):
                     compress_preset=compress,
                     offset_ms=offset,
                     chime_volume=chime_volume,
+                    music_path=tmp_music_path,
+                    music_position=music_position,
                 )
 
-                # Stream to all targets in parallel
-                if len(target_identifiers) == 1:
-                    await self._async_stream_to_device(
-                        target_identifiers[0], tmp_path, volume
+                if use_ma:
+                    # Music Assistant transport (synchronized AirPlay 2)
+                    ma_speakers = self._resolve_ma_speakers(speaker)
+                    if not ma_speakers:
+                        _LOGGER.error(
+                            "No Music Assistant speakers found, "
+                            "falling back to pyatv"
+                        )
+                        use_ma = False
+
+                if use_ma:
+                    await self._async_play_via_ma(
+                        tmp_path, ma_speakers, volume
                     )
                 else:
-                    _LOGGER.debug(
-                        "Streaming to %d speakers in parallel",
-                        len(target_identifiers),
-                    )
-                    await asyncio.gather(
-                        *(
-                            self._async_stream_to_device(tid, tmp_path, volume)
-                            for tid in target_identifiers
+                    # pyatv transport (fallback)
+                    target_ids = self._resolve_speakers_pyatv(speaker)
+                    if len(target_ids) == 1:
+                        await self._async_stream_to_device(
+                            target_ids[0], tmp_path, volume
                         )
-                    )
+                    else:
+                        _LOGGER.debug(
+                            "Streaming to %d speakers in parallel (pyatv)",
+                            len(target_ids),
+                        )
+                        await asyncio.gather(
+                            *(
+                                self._async_stream_to_device(
+                                    tid, tmp_path, volume
+                                )
+                                for tid in target_ids
+                            )
+                        )
 
             except Exception:
                 _LOGGER.exception("Failed to send TTS to HomePod")
@@ -372,6 +723,108 @@ class HomePodTTSNotifyEntity(NotifyEntity):
                 if tmp_path is not None:
                     with contextlib.suppress(FileNotFoundError):
                         os.unlink(tmp_path)
+                if tmp_music_path is not None:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(tmp_music_path)
+
+    async def async_play_music(
+        self,
+        prompt: str,
+        *,
+        volume: float | None = None,
+        speaker: str | list[str] | None = None,
+    ) -> None:
+        """Generate music via Lyria 3 and play on speakers."""
+        if self._is_muted():
+            _LOGGER.debug("Muted, ignoring play_music call")
+            return
+
+        if volume is None:
+            volume = self._volume
+
+        use_ma = self._has_music_assistant()
+
+        async with self._lock:
+            tmp_path = None
+            try:
+                tts_client = self._get_tts_client()
+                _LOGGER.debug("Generating music for: %s", prompt)
+                mp3_bytes = await tts_client.generate_music(prompt)
+
+                fd, tmp_path = tempfile.mkstemp(
+                    suffix=".mp3", prefix="homepod_music_"
+                )
+                os.close(fd)
+                await self._hass.async_add_executor_job(
+                    _write_bytes, tmp_path, mp3_bytes
+                )
+
+                if use_ma:
+                    ma_speakers = self._resolve_ma_speakers(speaker)
+                    if ma_speakers:
+                        await self._async_play_mp3_via_ma(
+                            tmp_path, ma_speakers, volume
+                        )
+                    else:
+                        _LOGGER.error("No MA speakers found for music playback")
+                else:
+                    _LOGGER.error(
+                        "Music playback requires Music Assistant (MP3 format)"
+                    )
+
+            except Exception:
+                _LOGGER.exception("Failed to generate/play music")
+            finally:
+                if tmp_path is not None:
+                    with contextlib.suppress(FileNotFoundError):
+                        os.unlink(tmp_path)
+
+    async def _async_play_mp3_via_ma(
+        self,
+        mp3_path: str,
+        speakers: list[str],
+        volume: float,
+    ) -> str:
+        """Play MP3 via Music Assistant."""
+        www_dir = Path(self._hass.config.path("www")) / MA_SERVE_DIR
+        www_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"music_{uuid.uuid4().hex[:12]}.mp3"
+        served_path = www_dir / filename
+        await self._hass.async_add_executor_job(
+            shutil.copy2, mp3_path, str(served_path)
+        )
+
+        base_url = (
+            self._hass.config.internal_url
+            or self._hass.config.external_url
+            or "http://homeassistant.local:8123"
+        )
+        url = f"{base_url}/local/{MA_SERVE_DIR}/{filename}"
+
+        _LOGGER.debug("Playing music via MA: %s -> %s", url, speakers)
+
+        service_data: dict[str, Any] = {
+            "url": url,
+            "use_pre_announce": False,
+        }
+        if volume is not None:
+            service_data["announce_volume"] = int(volume * 100)
+        await self._hass.services.async_call(
+            "music_assistant",
+            "play_announcement",
+            service_data,
+            target={"entity_id": speakers},
+            blocking=True,
+        )
+
+        async def _cleanup() -> None:
+            await asyncio.sleep(120)
+            with contextlib.suppress(FileNotFoundError):
+                os.unlink(str(served_path))
+
+        self._hass.async_create_task(_cleanup())
+        return str(served_path)
 
     async def async_send_message(self, message: str, **kwargs: Any) -> None:
         await self.async_play_tts(message)

@@ -15,6 +15,13 @@ CONF_COMPRESS_TTS = "compress_tts"
 CONF_CHIME_OFFSET = "chime_offset"
 CONF_CACHE_ENABLED = "cache_enabled"
 CONF_CACHE_MAX_MB = "cache_max_mb"
+CONF_DEFAULT_SPEAKERS = "default_speakers"
+CONF_MUTE_ENTITY = "mute_entity"
+CONF_QUIET_ENTITY = "quiet_entity"
+CONF_QUIET_PROMPT = "quiet_prompt"
+CONF_QUIET_CHIME_VOLUME = "quiet_chime_volume"
+CONF_QUIET_VOLUME = "quiet_volume"
+CONF_QUIET_SPEAKERS = "quiet_speakers"
 
 DEFAULT_CHIME_ENABLED = True
 DEFAULT_CHIME_VOLUME = 1.0
@@ -27,6 +34,9 @@ DEFAULT_COMPRESS_TTS = "moderate"
 DEFAULT_CHIME_OFFSET = 0
 DEFAULT_CACHE_ENABLED = True
 DEFAULT_CACHE_MAX_MB = 200
+DEFAULT_QUIET_PROMPT = "Speak in a soft, gentle whisper"
+DEFAULT_QUIET_CHIME_VOLUME = 0.3
+DEFAULT_QUIET_VOLUME = 0.25
 
 GEMINI_TTS_BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"

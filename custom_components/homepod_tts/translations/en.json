@@ -33,7 +33,14 @@
           "chime_offset": "Chime-TTS offset in ms (negative trims chime tail)",
           "default_volume": "Announcement volume",
           "restore_volume": "Restore volume after announcement",
+          "default_speakers": "Default speakers (empty = configured HomePod only)",
           "compress_tts": "TTS audio compression",
+          "mute_entity": "Mute entity (when on, all notifications are silenced)",
+          "quiet_entity": "Quiet mode entity (when on, whisper mode is active)",
+          "quiet_prompt": "Quiet mode voice style prompt",
+          "quiet_chime_volume": "Quiet mode chime volume",
+          "quiet_volume": "Quiet mode announcement volume",
+          "quiet_speakers": "Quiet mode default speakers",
           "cache_enabled": "Cache TTS audio (avoid re-generating same content)",
           "cache_max_mb": "Maximum cache size"
         }

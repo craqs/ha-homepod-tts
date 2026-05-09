@@ -82,6 +82,52 @@ say:
           step: 100
           unit_of_measurement: ms
           mode: slider
+    quiet:
+      name: Quiet mode
+      description: Force quiet mode for this call (whisper prompt, lower volume). Overrides the quiet mode entity state.
+      required: false
+      selector:
+        boolean:
+
+play_music:
+  name: Play Music
+  description: Generate music via Gemini Lyria 3 and play it on HomePod speakers.
+  fields:
+    entity_id:
+      name: Entity
+      description: The homepod_tts notify entity to use.
+      required: true
+      selector:
+        entity:
+          integration: homepod_tts
+          domain: notify
+    prompt:
+      name: Music prompt
+      description: Describe the music to generate (style, mood, instruments, lyrics topic, etc.)
+      required: true
+      example: "Upbeat pop song about a sunny day at the beach, with guitar and drums"
+      selector:
+        text:
+          multiline: true
+    volume_level:
+      name: Volume level
+      description: Playback volume 0.0-1.0 (overrides default).
+      required: false
+      selector:
+        number:
+          min: 0.0
+          max: 1.0
+          step: 0.05
+          mode: slider
+    speaker:
+      name: Speaker(s)
+      description: Target one or more HomePods. Overrides the default speakers.
+      required: false
+      selector:
+        entity:
+          integration: apple_tv
+          domain: media_player
+          multiple: true
 
 clear_cache:
   name: Clear TTS cache

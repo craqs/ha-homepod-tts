@@ -13,6 +13,8 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -32,9 +34,16 @@ from .const import (
     CONF_CHIME_PATH,
     CONF_CHIME_VOLUME,
     CONF_COMPRESS_TTS,
+    CONF_DEFAULT_SPEAKERS,
     CONF_DEFAULT_VOLUME,
     CONF_GEMINI_API_KEY,
     CONF_HOMEPOD_IDENTIFIER,
+    CONF_MUTE_ENTITY,
+    CONF_QUIET_CHIME_VOLUME,
+    CONF_QUIET_ENTITY,
+    CONF_QUIET_PROMPT,
+    CONF_QUIET_SPEAKERS,
+    CONF_QUIET_VOLUME,
     CONF_RESTORE_VOLUME,
     CONF_TTS_MODEL,
     CONF_TTS_PROMPT,
@@ -46,6 +55,9 @@ from .const import (
     DEFAULT_CHIME_OFFSET,
     DEFAULT_CHIME_VOLUME,
     DEFAULT_COMPRESS_TTS,
+    DEFAULT_QUIET_CHIME_VOLUME,
+    DEFAULT_QUIET_PROMPT,
+    DEFAULT_QUIET_VOLUME,
     DEFAULT_RESTORE_VOLUME,
     DEFAULT_TTS_MODEL,
     DEFAULT_TTS_PROMPT,
@@ -139,6 +151,23 @@ class HomePodTTSOptionsFlow(OptionsFlow):
 
         options = self.config_entry.options
 
+        # Build apple_tv media_player options for default speakers
+        apple_tv_entries = self.hass.config_entries.async_entries("apple_tv")
+        speaker_options = [
+            {
+                "value": entry.unique_id or entry.entry_id,
+                "label": entry.title,
+            }
+            for entry in apple_tv_entries
+            if entry.title  # skip entries without titles
+        ]
+        valid_speaker_values = {o["value"] for o in speaker_options}
+        # Filter out any stale saved values that don't match current options
+        saved_speakers = [
+            s for s in options.get(CONF_DEFAULT_SPEAKERS, [])
+            if s in valid_speaker_values
+        ]
+
         compress_options = [
             {"value": k, "label": k.capitalize()}
             for k in COMPRESS_PRESETS
@@ -225,6 +254,18 @@ class HomePodTTSOptionsFlow(OptionsFlow):
                     default=options.get(CONF_RESTORE_VOLUME, DEFAULT_RESTORE_VOLUME),
                 ): bool,
                 vol.Optional(
+                    CONF_DEFAULT_SPEAKERS,
+                    description={
+                        "suggested_value": saved_speakers
+                    },
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=speaker_options,
+                        multiple=True,
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+                vol.Optional(
                     CONF_COMPRESS_TTS,
                     default=options.get(CONF_COMPRESS_TTS, DEFAULT_COMPRESS_TTS),
                 ): SelectSelector(
@@ -233,6 +274,80 @@ class HomePodTTSOptionsFlow(OptionsFlow):
                         mode=SelectSelectorMode.DROPDOWN,
                     )
                 ),
+                # -- Mute --
+                vol.Optional(
+                    CONF_MUTE_ENTITY,
+                    description={
+                        "suggested_value": options.get(CONF_MUTE_ENTITY, "")
+                    },
+                ): EntitySelector(
+                    EntitySelectorConfig(
+                        domain=["input_boolean", "binary_sensor", "switch"],
+                    )
+                ),
+                # -- Quiet mode --
+                vol.Optional(
+                    CONF_QUIET_ENTITY,
+                    description={
+                        "suggested_value": options.get(CONF_QUIET_ENTITY, "")
+                    },
+                ): EntitySelector(
+                    EntitySelectorConfig(
+                        domain=["input_boolean", "binary_sensor", "switch"],
+                    )
+                ),
+                vol.Optional(
+                    CONF_QUIET_PROMPT,
+                    description={
+                        "suggested_value": options.get(
+                            CONF_QUIET_PROMPT, DEFAULT_QUIET_PROMPT
+                        )
+                    },
+                ): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEXT)
+                ),
+                vol.Optional(
+                    CONF_QUIET_CHIME_VOLUME,
+                    default=options.get(
+                        CONF_QUIET_CHIME_VOLUME, DEFAULT_QUIET_CHIME_VOLUME
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0.0,
+                        max=2.0,
+                        step=0.1,
+                        mode=NumberSelectorMode.SLIDER,
+                    )
+                ),
+                vol.Optional(
+                    CONF_QUIET_VOLUME,
+                    default=options.get(
+                        CONF_QUIET_VOLUME, DEFAULT_QUIET_VOLUME
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0.0,
+                        max=1.0,
+                        step=0.05,
+                        mode=NumberSelectorMode.SLIDER,
+                    )
+                ),
+                vol.Optional(
+                    CONF_QUIET_SPEAKERS,
+                    description={
+                        "suggested_value": [
+                            s for s in options.get(CONF_QUIET_SPEAKERS, [])
+                            if s in valid_speaker_values
+                        ]
+                    },
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=speaker_options,
+                        multiple=True,
+                        mode=SelectSelectorMode.LIST,
+                    )
+                ),
+                # -- Cache --
                 vol.Optional(
                     CONF_CACHE_ENABLED,
                     default=options.get(CONF_CACHE_ENABLED, DEFAULT_CACHE_ENABLED),

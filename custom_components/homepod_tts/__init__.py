@@ -4,6 +4,7 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import ConfigEntryNotReady
 import homeassistant.helpers.config_validation as cv
 
 from .const import DOMAIN, PLATFORMS
@@ -11,6 +12,7 @@ from .const import DOMAIN, PLATFORMS
 _LOGGER = logging.getLogger(__name__)
 
 SERVICE_SAY = "say"
+SERVICE_PLAY_MUSIC = "play_music"
 SERVICE_CLEAR_CACHE = "clear_cache"
 
 ATTR_MESSAGE = "message"
@@ -22,6 +24,7 @@ ATTR_OFFSET = "offset"
 ATTR_PROMPT = "prompt"
 ATTR_SPEAKER = "speaker"
 ATTR_CHIME_VOLUME = "chime_volume"
+ATTR_QUIET = "quiet"
 
 SERVICE_SAY_SCHEMA = vol.Schema(
     {
@@ -40,6 +43,18 @@ SERVICE_SAY_SCHEMA = vol.Schema(
         vol.Optional(ATTR_CHIME_VOLUME): vol.All(
             vol.Coerce(float), vol.Range(min=0.0, max=2.0)
         ),
+        vol.Optional(ATTR_QUIET): cv.boolean,
+    }
+)
+
+SERVICE_PLAY_MUSIC_SCHEMA = vol.Schema(
+    {
+        vol.Required(ATTR_ENTITY_ID): cv.entity_id,
+        vol.Required(ATTR_PROMPT): cv.string,
+        vol.Optional(ATTR_VOLUME_LEVEL): vol.All(
+            vol.Coerce(float), vol.Range(min=0.0, max=1.0)
+        ),
+        vol.Optional(ATTR_SPEAKER): vol.Any(cv.entity_id, [cv.entity_id]),
     }
 )
 
@@ -47,10 +62,23 @@ SERVICE_CLEAR_CACHE_SCHEMA = vol.Schema({})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    # Verify apple_tv integration is ready (our speakers depend on it)
+    apple_tv_entries = hass.config_entries.async_entries("apple_tv")
+    if not apple_tv_entries:
+        raise ConfigEntryNotReady(
+            "Apple TV integration not yet available, will retry"
+        )
+
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {}
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception as err:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        raise ConfigEntryNotReady(
+            f"Platform setup failed, will retry: {err}"
+        ) from err
 
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
 
@@ -64,6 +92,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         prompt = call.data.get(ATTR_PROMPT)
         speaker = call.data.get(ATTR_SPEAKER)
         chime_volume = call.data.get(ATTR_CHIME_VOLUME)
+        quiet = call.data.get(ATTR_QUIET)
 
         for eid, data in hass.data[DOMAIN].items():
             entity = data.get("entity")
@@ -77,19 +106,45 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     prompt=prompt,
                     speaker=speaker,
                     chime_volume=chime_volume,
+                    quiet=quiet,
+                )
+                return
+
+        _LOGGER.error("Entity %s not found in homepod_tts", entity_id)
+
+    async def async_handle_play_music(call: ServiceCall) -> None:
+        entity_id = call.data[ATTR_ENTITY_ID]
+        prompt = call.data[ATTR_PROMPT]
+        volume = call.data.get(ATTR_VOLUME_LEVEL)
+        speaker = call.data.get(ATTR_SPEAKER)
+
+        for eid, data in hass.data[DOMAIN].items():
+            entity = data.get("entity")
+            if entity is not None and entity.entity_id == entity_id:
+                await entity.async_play_music(
+                    prompt,
+                    volume=volume,
+                    speaker=speaker,
                 )
                 return
 
         _LOGGER.error("Entity %s not found in homepod_tts", entity_id)
 
     async def async_handle_clear_cache(call: ServiceCall) -> None:
-        from .cache import clear_cache
-        count = clear_cache(hass)
+        from .cache import async_clear_cache
+        count = await async_clear_cache(hass)
         _LOGGER.info("Cache cleared: %d entries removed", count)
 
     if not hass.services.has_service(DOMAIN, SERVICE_SAY):
         hass.services.async_register(
             DOMAIN, SERVICE_SAY, async_handle_say, schema=SERVICE_SAY_SCHEMA
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_PLAY_MUSIC):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_PLAY_MUSIC,
+            async_handle_play_music,
+            schema=SERVICE_PLAY_MUSIC_SCHEMA,
         )
     if not hass.services.has_service(DOMAIN, SERVICE_CLEAR_CACHE):
         hass.services.async_register(
@@ -107,8 +162,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         hass.data[DOMAIN].pop(entry.entry_id, None)
         if not hass.data[DOMAIN]:
-            hass.services.async_remove(DOMAIN, SERVICE_SAY)
-            hass.services.async_remove(DOMAIN, SERVICE_CLEAR_CACHE)
+            for svc in (SERVICE_SAY, SERVICE_PLAY_MUSIC, SERVICE_CLEAR_CACHE):
+                if hass.services.has_service(DOMAIN, svc):
+                    hass.services.async_remove(DOMAIN, svc)
     return unload_ok
 
 

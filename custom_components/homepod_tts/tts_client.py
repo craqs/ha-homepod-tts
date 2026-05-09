@@ -74,6 +74,34 @@ class GeminiTTSClient:
 
         return base64.b64decode(audio_b64)
 
+    async def generate_music(self, prompt: str) -> bytes:
+        """Generate music via Gemini Lyria 3 API. Returns MP3 bytes."""
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"lyria-3-clip-preview:generateContent?key={self._api_key}"
+        )
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+        }
+
+        async with self._session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=120)) as resp:
+            if resp.status != 200:
+                body = await resp.text()
+                raise RuntimeError(
+                    f"Lyria API returned {resp.status}: {body}"
+                )
+            data = await resp.json()
+
+        try:
+            for part in data["candidates"][0]["content"]["parts"]:
+                if "inlineData" in part:
+                    return base64.b64decode(part["inlineData"]["data"])
+        except (KeyError, IndexError):
+            pass
+
+        raise RuntimeError("No audio data in Lyria response")
+
     async def validate_api_key(self) -> bool:
         try:
             await self.synthesize("test")

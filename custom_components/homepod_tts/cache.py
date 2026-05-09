@@ -27,7 +27,7 @@ def cache_key(
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def get_cached(hass: HomeAssistant, key: str) -> bytes | None:
+def _sync_get_cached(hass: HomeAssistant, key: str) -> bytes | None:
     path = _cache_dir(hass) / f"{key}.pcm"
     if path.is_file():
         _LOGGER.debug("Cache hit: %s", key[:12])
@@ -36,13 +36,21 @@ def get_cached(hass: HomeAssistant, key: str) -> bytes | None:
     return None
 
 
-def put_cache(hass: HomeAssistant, key: str, pcm_data: bytes) -> None:
+async def get_cached(hass: HomeAssistant, key: str) -> bytes | None:
+    return await hass.async_add_executor_job(_sync_get_cached, hass, key)
+
+
+def _sync_put_cache(hass: HomeAssistant, key: str, pcm_data: bytes) -> None:
     path = _cache_dir(hass) / f"{key}.pcm"
     path.write_bytes(pcm_data)
     _LOGGER.debug("Cached TTS PCM: %s (%d bytes)", key[:12], len(pcm_data))
 
 
-def clear_cache(hass: HomeAssistant) -> int:
+async def put_cache(hass: HomeAssistant, key: str, pcm_data: bytes) -> None:
+    await hass.async_add_executor_job(_sync_put_cache, hass, key, pcm_data)
+
+
+def _sync_clear_cache(hass: HomeAssistant) -> int:
     cache_dir = _cache_dir(hass)
     count = 0
     for f in cache_dir.glob("*.pcm"):
@@ -52,7 +60,16 @@ def clear_cache(hass: HomeAssistant) -> int:
     return count
 
 
-def enforce_max_size(hass: HomeAssistant, max_mb: int) -> None:
+async def async_clear_cache(hass: HomeAssistant) -> int:
+    return await hass.async_add_executor_job(_sync_clear_cache, hass)
+
+
+def clear_cache(hass: HomeAssistant) -> int:
+    """Synchronous clear_cache - kept for backward compat."""
+    return _sync_clear_cache(hass)
+
+
+def _sync_enforce_max_size(hass: HomeAssistant, max_mb: int) -> None:
     cache_dir = _cache_dir(hass)
     files = sorted(
         cache_dir.glob("*.pcm"),
@@ -67,3 +84,7 @@ def enforce_max_size(hass: HomeAssistant, max_mb: int) -> None:
         oldest.unlink(missing_ok=True)
         total -= size
         _LOGGER.debug("Evicted cache file %s (%d bytes)", oldest.name, size)
+
+
+async def enforce_max_size(hass: HomeAssistant, max_mb: int) -> None:
+    await hass.async_add_executor_job(_sync_enforce_max_size, hass, max_mb)
