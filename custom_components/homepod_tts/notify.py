@@ -236,6 +236,62 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             CONF_MINI_VOLUME_SCALE, DEFAULT_MINI_VOLUME_SCALE
         )
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose all operational values as entity attributes for easy inspection."""
+        is_muted = self._is_muted()
+        is_quiet = self._is_quiet()
+
+        # Resolve effective volume/speakers (quiet overrides applied)
+        effective_volume = self._quiet_volume if is_quiet else self._volume
+        effective_chime_volume = (
+            self._quiet_chime_volume if is_quiet else self._chime_volume
+        )
+        effective_prompt = (
+            self._quiet_prompt if is_quiet else self._default_prompt
+        )
+        effective_speakers = (
+            self._quiet_speakers if (is_quiet and self._quiet_speakers)
+            else self._default_speakers
+        )
+
+        return {
+            # -- TTS --
+            "tts_model": self._model,
+            "tts_voice": self._voice,
+            "tts_prompt": self._default_prompt or None,
+            # -- Volume --
+            "volume": self._volume,
+            "mini_volume_scale": self._mini_volume_scale,
+            "effective_volume": round(effective_volume, 3),
+            # -- Chime --
+            "chime_enabled": self._chime_enabled,
+            "chime_volume": self._chime_volume,
+            "chime_offset_ms": self._chime_offset,
+            "effective_chime_volume": round(effective_chime_volume, 3),
+            # -- Compression --
+            "compress_tts": self._compress_tts,
+            # -- Speakers --
+            "default_speakers": self._default_speakers,
+            "effective_speakers": effective_speakers,
+            "effective_prompt": effective_prompt or None,
+            # -- Mute --
+            "mute_entity": self._mute_entity or None,
+            "is_muted": is_muted,
+            # -- Quiet mode --
+            "quiet_entity": self._quiet_entity or None,
+            "is_quiet": is_quiet,
+            "quiet_volume": self._quiet_volume,
+            "quiet_chime_volume": self._quiet_chime_volume,
+            "quiet_prompt": self._quiet_prompt,
+            "quiet_speakers": self._quiet_speakers,
+            # -- Cache --
+            "cache_enabled": self._cache_enabled,
+            "cache_max_mb": self._cache_max_mb,
+            # -- Restore --
+            "restore_volume": self._restore_volume,
+        }
+
     def _is_muted(self) -> bool:
         """Check if the mute entity is on."""
         if not self._mute_entity:
