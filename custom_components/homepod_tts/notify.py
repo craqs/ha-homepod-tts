@@ -39,6 +39,7 @@ from .const import (
     CONF_DEFAULT_VOLUME,
     CONF_GEMINI_API_KEY,
     CONF_HOMEPOD_IDENTIFIER,
+    CONF_MINI_VOLUME_SCALE,
     CONF_MUTE_ENTITY,
     CONF_QUIET_CHIME_VOLUME,
     CONF_QUIET_ENTITY,
@@ -55,6 +56,7 @@ from .const import (
     DEFAULT_CHIME_OFFSET,
     DEFAULT_CHIME_VOLUME,
     DEFAULT_COMPRESS_TTS,
+    DEFAULT_MINI_VOLUME_SCALE,
     DEFAULT_QUIET_CHIME_VOLUME,
     DEFAULT_QUIET_PROMPT,
     DEFAULT_QUIET_VOLUME,
@@ -64,6 +66,7 @@ from .const import (
     DEFAULT_TTS_VOICE,
     DEFAULT_VOLUME,
     DOMAIN,
+    MINI_SPEAKER_LABEL,
 )
 from .tts_client import GeminiTTSClient
 
@@ -227,6 +230,12 @@ class HomePodTTSNotifyEntity(NotifyEntity):
     def _quiet_speakers(self) -> list[str]:
         return self._entry.options.get(CONF_QUIET_SPEAKERS, [])
 
+    @property
+    def _mini_volume_scale(self) -> float:
+        return self._entry.options.get(
+            CONF_MINI_VOLUME_SCALE, DEFAULT_MINI_VOLUME_SCALE
+        )
+
     def _is_muted(self) -> bool:
         """Check if the mute entity is on."""
         if not self._mute_entity:
@@ -266,21 +275,27 @@ class HomePodTTSNotifyEntity(NotifyEntity):
     def _build_mac_to_ma_map(self) -> dict[str, str]:
         """Build a MAC-address -> MA entity_id mapping.
 
-        MA entities expose an ``active_queue`` attribute formatted as
-        ``ap<mac_lowercase>`` (e.g. ``ap067b90602db2``).  Apple TV config
-        entries store identifiers as MAC addresses (``06:7B:90:60:2D:B2``).
-        Normalising both to lowercase-no-colon gives a deterministic match.
+        Music Assistant media_player entities have a unique_id formatted as
+        ``ap<mac_lowercase_no_colons>`` (e.g. ``ap067b90602db2``), readable
+        from the entity registry.  Apple TV config entries store identifiers
+        as MAC addresses (``06:7B:90:60:2D:B2``).  Normalising both to
+        lowercase-no-colon gives a deterministic match.
+
+        Note: older MA versions exposed ``active_queue`` and ``mass_player_type``
+        state attributes for this purpose, but these were removed in MA 2.8+.
+        Reading from the entity registry is version-agnostic.
         """
         mac_map: dict[str, str] = {}
-        for state in self._hass.states.async_all("media_player"):
-            queue_id = state.attributes.get("active_queue", "")
+        registry = er.async_get(self._hass)
+        for entry in registry.entities.values():
             if (
-                state.attributes.get("mass_player_type")
-                and isinstance(queue_id, str)
-                and queue_id.startswith("ap")
+                entry.platform == "music_assistant"
+                and entry.domain == "media_player"
             ):
-                mac_norm = queue_id[2:]  # strip "ap" prefix
-                mac_map[mac_norm] = state.entity_id
+                uid = entry.unique_id or ""
+                if uid.startswith("ap"):
+                    mac_norm = uid[2:]  # strip "ap" prefix
+                    mac_map[mac_norm] = entry.entity_id
         return mac_map
 
     def _resolve_ma_speakers(
@@ -369,6 +384,34 @@ class HomePodTTSNotifyEntity(NotifyEntity):
         )
         return []
 
+    # -- HomePod mini volume scaling --
+
+    def _is_mini(self, entity_id: str | None) -> bool:
+        """Return True if the entity has the 'homepod_mini' HA label."""
+        if not entity_id:
+            return False
+        entry = er.async_get(self._hass).async_get(entity_id)
+        return entry is not None and MINI_SPEAKER_LABEL in entry.labels
+
+    def _scaled_volume(self, base: float, is_mini: bool) -> float:
+        """Apply mini_volume_scale multiplier for mini speakers."""
+        if is_mini:
+            return min(1.0, max(0.0, base * self._mini_volume_scale))
+        return base
+
+    def _entity_id_for_mac(self, mac: str) -> str | None:
+        """Find the apple_tv media_player entity_id for a given MAC identifier."""
+        mac_norm = mac.replace(":", "").lower()
+        registry = er.async_get(self._hass)
+        for atv_entry in self._hass.config_entries.async_entries("apple_tv"):
+            if (atv_entry.unique_id or "").replace(":", "").lower() == mac_norm:
+                for entity in registry.entities.get_entries_for_config_entry_id(
+                    atv_entry.entry_id
+                ):
+                    if entity.domain == "media_player":
+                        return entity.entity_id
+        return None
+
     # -- Music Assistant transport --
 
     async def _async_play_via_ma(
@@ -400,14 +443,34 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             "Playing via Music Assistant: %s -> %s", url, speakers
         )
 
-        # Target all speakers in a single call so MA can coordinate
-        # AirPlay 2 synchronized playback across devices
+        # Read current volumes so we can restore them afterwards
+        orig_volumes: dict[str, float | None] = {}
+        for spk in speakers:
+            state = self._hass.states.get(spk)
+            orig_volumes[spk] = (
+                state.attributes.get("volume_level") if state else None
+            )
+
+        # Set per-speaker volumes in parallel (mini gets scaled independently)
+        async def _set_vol(entity_id: str, vol: float) -> None:
+            await self._hass.services.async_call(
+                "media_player",
+                "volume_set",
+                {"volume_level": vol},
+                target={"entity_id": entity_id},
+            )
+
+        await asyncio.gather(*(
+            _set_vol(spk, self._scaled_volume(volume, self._is_mini(spk)))
+            for spk in speakers
+        ))
+
+        # Single play_announcement call — no announce_volume so MA plays at
+        # each speaker's current (pre-set) level, preserving AirPlay 2 sync
         service_data: dict[str, Any] = {
             "url": url,
             "use_pre_announce": False,
         }
-        if volume is not None:
-            service_data["announce_volume"] = int(volume * 100)
         await self._hass.services.async_call(
             "music_assistant",
             "play_announcement",
@@ -415,6 +478,13 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             target={"entity_id": speakers},
             blocking=True,
         )
+
+        # Restore original per-speaker volumes in parallel
+        await asyncio.gather(*(
+            _set_vol(spk, orig_vol)
+            for spk, orig_vol in orig_volumes.items()
+            if orig_vol is not None
+        ))
 
         # Schedule cleanup of the served file after a delay
         async def _cleanup() -> None:
@@ -431,19 +501,37 @@ class HomePodTTSNotifyEntity(NotifyEntity):
     def _resolve_speaker_identifier(
         self, speaker_entity_id: str | None
     ) -> str:
-        """Resolve a media_player entity_id to an apple_tv identifier."""
+        """Resolve a media_player entity_id to an apple_tv identifier.
+
+        Handles both apple_tv and music_assistant entity IDs so that pyatv
+        fallback works correctly even when speakers were configured as MA
+        entity IDs.
+        """
         if not speaker_entity_id:
             return self._identifier
 
         entity_registry = er.async_get(self._hass)
         entity_entry = entity_registry.async_get(speaker_entity_id)
-        if entity_entry and entity_entry.config_entry_id:
+        if entity_entry:
             apple_tv_entries = self._hass.config_entries.async_entries(
                 "apple_tv"
             )
-            for atv_entry in apple_tv_entries:
-                if atv_entry.entry_id == entity_entry.config_entry_id:
-                    return atv_entry.unique_id or atv_entry.entry_id
+            if entity_entry.platform == "music_assistant":
+                # MA unique_id is ap<mac_no_colons> — strip prefix and match
+                uid = entity_entry.unique_id or ""
+                if uid.startswith("ap"):
+                    mac_norm = uid[2:]
+                    for atv_entry in apple_tv_entries:
+                        atv_uid = (
+                            atv_entry.unique_id or ""
+                        ).replace(":", "").lower()
+                        if atv_uid == mac_norm:
+                            return atv_entry.unique_id or atv_entry.entry_id
+            elif entity_entry.config_entry_id:
+                # apple_tv entity — match by config entry
+                for atv_entry in apple_tv_entries:
+                    if atv_entry.entry_id == entity_entry.config_entry_id:
+                        return atv_entry.unique_id or atv_entry.entry_id
 
         _LOGGER.warning(
             "Could not resolve speaker %s, using default", speaker_entity_id
@@ -526,8 +614,12 @@ class HomePodTTSNotifyEntity(NotifyEntity):
                 with contextlib.suppress(Exception):
                     previous_volume = atv.audio.volume
 
+            atv_entity = self._entity_id_for_mac(identifier)
+            effective_vol = self._scaled_volume(
+                volume, self._is_mini(atv_entity)
+            )
             with contextlib.suppress(Exception):
-                await atv.audio.set_volume(volume * 100)
+                await atv.audio.set_volume(effective_vol * 100)
 
             _LOGGER.debug(
                 "Streaming %s to HomePod %s", tmp_path, identifier[:12]
@@ -804,12 +896,31 @@ class HomePodTTSNotifyEntity(NotifyEntity):
 
         _LOGGER.debug("Playing music via MA: %s -> %s", url, speakers)
 
+        # Per-speaker volume (mini scaling), then single MA call
+        orig_volumes: dict[str, float | None] = {}
+        for spk in speakers:
+            state = self._hass.states.get(spk)
+            orig_volumes[spk] = (
+                state.attributes.get("volume_level") if state else None
+            )
+
+        async def _set_vol(entity_id: str, vol: float) -> None:
+            await self._hass.services.async_call(
+                "media_player",
+                "volume_set",
+                {"volume_level": vol},
+                target={"entity_id": entity_id},
+            )
+
+        await asyncio.gather(*(
+            _set_vol(spk, self._scaled_volume(volume, self._is_mini(spk)))
+            for spk in speakers
+        ))
+
         service_data: dict[str, Any] = {
             "url": url,
             "use_pre_announce": False,
         }
-        if volume is not None:
-            service_data["announce_volume"] = int(volume * 100)
         await self._hass.services.async_call(
             "music_assistant",
             "play_announcement",
@@ -817,6 +928,12 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             target={"entity_id": speakers},
             blocking=True,
         )
+
+        await asyncio.gather(*(
+            _set_vol(spk, orig_vol)
+            for spk, orig_vol in orig_volumes.items()
+            if orig_vol is not None
+        ))
 
         async def _cleanup() -> None:
             await asyncio.sleep(120)

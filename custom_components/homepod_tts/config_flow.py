@@ -38,6 +38,7 @@ from .const import (
     CONF_DEFAULT_VOLUME,
     CONF_GEMINI_API_KEY,
     CONF_HOMEPOD_IDENTIFIER,
+    CONF_MINI_VOLUME_SCALE,
     CONF_MUTE_ENTITY,
     CONF_QUIET_CHIME_VOLUME,
     CONF_QUIET_ENTITY,
@@ -55,6 +56,7 @@ from .const import (
     DEFAULT_CHIME_OFFSET,
     DEFAULT_CHIME_VOLUME,
     DEFAULT_COMPRESS_TTS,
+    DEFAULT_MINI_VOLUME_SCALE,
     DEFAULT_QUIET_CHIME_VOLUME,
     DEFAULT_QUIET_PROMPT,
     DEFAULT_QUIET_VOLUME,
@@ -245,6 +247,19 @@ class HomePodTTSOptionsFlow(OptionsFlow):
                     NumberSelectorConfig(
                         min=0.0,
                         max=1.0,
+                        step=0.05,
+                        mode=NumberSelectorMode.SLIDER,
+                    )
+                ),
+                vol.Optional(
+                    CONF_MINI_VOLUME_SCALE,
+                    default=options.get(
+                        CONF_MINI_VOLUME_SCALE, DEFAULT_MINI_VOLUME_SCALE
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0.5,
+                        max=2.0,
                         step=0.05,
                         mode=NumberSelectorMode.SLIDER,
                     )

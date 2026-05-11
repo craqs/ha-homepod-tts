@@ -38,6 +38,11 @@ DEFAULT_QUIET_PROMPT = "Speak in a soft, gentle whisper"
 DEFAULT_QUIET_CHIME_VOLUME = 0.3
 DEFAULT_QUIET_VOLUME = 0.25
 
+CONF_MINI_VOLUME_SCALE = "mini_volume_scale"
+DEFAULT_MINI_VOLUME_SCALE = 1.0
+# HA label slug the user assigns to HomePod mini media_player entities
+MINI_SPEAKER_LABEL = "homepod_mini"
+
 GEMINI_TTS_BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
 )

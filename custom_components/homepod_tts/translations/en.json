@@ -32,6 +32,7 @@
           "chime_volume": "Chime volume in audio mix (1.0 = unchanged)",
           "chime_offset": "Chime-TTS offset in ms (negative trims chime tail)",
           "default_volume": "Announcement volume",
+          "mini_volume_scale": "HomePod mini volume scale (1.0 = same as full-size; assign label 'homepod_mini' to mini entities)",
           "restore_volume": "Restore volume after announcement",
           "default_speakers": "Default speakers (empty = configured HomePod only)",
           "compress_tts": "TTS audio compression",
