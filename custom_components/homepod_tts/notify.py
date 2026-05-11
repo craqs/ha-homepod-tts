@@ -387,11 +387,37 @@ class HomePodTTSNotifyEntity(NotifyEntity):
     # -- HomePod mini volume scaling --
 
     def _is_mini(self, entity_id: str | None) -> bool:
-        """Return True if the entity has the 'homepod_mini' HA label."""
+        """Return True if the entity (or its paired apple_tv entity) has the 'homepod_mini' label.
+
+        The label can be placed on either the apple_tv OR the Music Assistant
+        media_player entity — both are checked via MAC cross-reference so the
+        user only needs to label one of the two.
+        """
         if not entity_id:
             return False
-        entry = er.async_get(self._hass).async_get(entity_id)
-        return entry is not None and MINI_SPEAKER_LABEL in entry.labels
+        registry = er.async_get(self._hass)
+        entry = registry.async_get(entity_id)
+        if entry is None:
+            return False
+        if MINI_SPEAKER_LABEL in entry.labels:
+            return True
+        # If this is a Music Assistant entity, also check the paired apple_tv entity
+        if entry.platform == "music_assistant":
+            uid = entry.unique_id or ""
+            if uid.startswith("ap"):
+                mac_norm = uid[2:]
+                for atv_entry in self._hass.config_entries.async_entries(
+                    "apple_tv"
+                ):
+                    if (
+                        atv_entry.unique_id or ""
+                    ).replace(":", "").lower() == mac_norm:
+                        for atv_entity in registry.entities.get_entries_for_config_entry_id(
+                            atv_entry.entry_id
+                        ):
+                            if MINI_SPEAKER_LABEL in atv_entity.labels:
+                                return True
+        return False
 
     def _scaled_volume(self, base: float, is_mini: bool) -> float:
         """Apply mini_volume_scale multiplier for mini speakers."""
