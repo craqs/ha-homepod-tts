@@ -1,5 +1,5 @@
 DOMAIN = "homepod_tts"
-PLATFORMS = ["notify"]
+PLATFORMS = ["notify", "sensor"]
 
 CONF_HOMEPOD_IDENTIFIER = "homepod_identifier"
 CONF_GEMINI_API_KEY = "gemini_api_key"

@@ -74,6 +74,46 @@ _LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CHIME_FILE = str(Path(__file__).parent / "sounds" / "chime.mp3")
 
+
+def classify_ma_speakers(
+    hass: HomeAssistant, default_speakers: list[str]
+) -> tuple[list[str], list[str], list[str]]:
+    """Classify MA speaker availability for a list of MAC identifiers.
+
+    Reads the entity registry to find Music Assistant media_player entities
+    whose unique_id matches ``ap<mac_no_colons>``, then checks their current
+    state.
+
+    Returns ``(available, unavailable, unresolved_macs)``:
+      - available: MA entity_ids that resolved and are not unavailable
+      - unavailable: MA entity_ids that resolved but are currently unavailable
+      - unresolved_macs: MACs that have no matching MA entity in the registry
+    """
+    registry = er.async_get(hass)
+    mac_map: dict[str, str] = {}
+    for entry in registry.entities.values():
+        if entry.platform == "music_assistant" and entry.domain == "media_player":
+            uid = entry.unique_id or ""
+            if uid.startswith("ap"):
+                mac_map[uid[2:]] = entry.entity_id
+
+    available: list[str] = []
+    unavailable: list[str] = []
+    unresolved: list[str] = []
+    for mac in default_speakers:
+        mac_norm = mac.replace(":", "").lower()
+        entity_id = mac_map.get(mac_norm)
+        if entity_id is None:
+            unresolved.append(mac)
+        else:
+            state = hass.states.get(entity_id)
+            if state is not None and state.state != "unavailable":
+                available.append(entity_id)
+            else:
+                unavailable.append(entity_id)
+
+    return available, unavailable, unresolved
+
 # ── Music injection parsing ───────────────────────────────────────────────────
 # Syntax: [music: <prompt>]
 # Example: "Hello! [music: upbeat jazz piano, 30 seconds]"
@@ -363,29 +403,20 @@ class HomePodTTSNotifyEntity(NotifyEntity):
 
         if not speaker:
             if self._default_speakers:
-                # Default speakers are stored as apple_tv identifiers (MACs)
-                result: list[str] = []
-                for identifier in self._default_speakers:
-                    resolved = self._find_ma_entity_by_mac(
-                        identifier, mac_map
-                    )
-                    result.extend(resolved)
-                available_result = [
-                    eid for eid in result
-                    if self._hass.states.get(eid) is not None
-                    and self._hass.states.get(eid).state != "unavailable"
-                ]
-                if available_result:
+                available, _unavail, _unresolved = classify_ma_speakers(
+                    self._hass, self._default_speakers
+                )
+                if available:
                     _LOGGER.debug(
-                        "Using configured default speakers: %s", available_result
+                        "Using configured default speakers: %s", available
                     )
-                    return available_result
-                if result:
-                    _LOGGER.warning(
-                        "All default MA speakers unavailable (%s), "
-                        "pyatv fallback will be used", result,
-                    )
-                    return []
+                    return available
+                _LOGGER.warning(
+                    "All default MA speakers unavailable (%s unavail, %s unresolved),"
+                    " pyatv fallback will be used",
+                    _unavail, _unresolved,
+                )
+                return []
             # Fallback to the single configured HomePod
             return self._find_ma_entity_by_mac(
                 self._identifier, mac_map
@@ -622,6 +653,10 @@ class HomePodTTSNotifyEntity(NotifyEntity):
     ) -> list[str]:
         """Resolve speaker field to a list of apple_tv identifiers."""
         if not speaker:
+            if self._default_speakers:
+                # Default speakers are stored as apple_tv MAC identifiers —
+                # pass them directly to pyatv (no entity_id resolution needed).
+                return list(dict.fromkeys(self._default_speakers))
             return [self._identifier]
         if isinstance(speaker, str):
             speaker = [speaker]
@@ -642,9 +677,10 @@ class HomePodTTSNotifyEntity(NotifyEntity):
         apple_tv_entries = self._hass.config_entries.async_entries("apple_tv")
 
         credentials: dict[int, str] = {}
+        identifier_norm = identifier.replace(":", "").lower()
         for atv_entry in apple_tv_entries:
             uid = atv_entry.unique_id or atv_entry.entry_id
-            if uid == identifier:
+            if uid.replace(":", "").lower() == identifier_norm:
                 credentials = atv_entry.data.get("credentials", {})
                 break
 
