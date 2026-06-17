@@ -1,15 +1,15 @@
 {
   "domain": "homepod_tts",
   "name": "HomePod TTS",
+  "after_dependencies": [
+    "apple_tv"
+  ],
   "codeowners": [
     "@craqs"
   ],
   "config_flow": true,
   "dependencies": [
     "ffmpeg"
-  ],
-  "after_dependencies": [
-    "apple_tv"
   ],
   "documentation": "https://github.com/craqs/ha-homepod-tts",
   "iot_class": "local_push",
