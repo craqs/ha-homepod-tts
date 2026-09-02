@@ -1,10 +1,10 @@
-# HomePod TTS — Custom Home Assistant Integration
+# HomePod TTS - Custom Home Assistant Integration
 
 A custom Home Assistant integration that plays TTS announcements with an optional chime sound on Apple HomePod, using **Google Gemini TTS** for speech synthesis and **Music Assistant / pyatv** for AirPlay streaming.
 
 ## Why?
 
-Home Assistant's built-in `apple_tv` integration uses pyatv for AirPlay streaming, which delegates audio decoding to the `miniaudio` library. `miniaudio` frequently fails with `DecodeError('failed to init decoder', -1)` when streaming TTS audio to HomePod — a long-standing regression ([#71569](https://github.com/home-assistant/core/issues/71569), [#97075](https://github.com/home-assistant/core/issues/97075), [#123176](https://github.com/home-assistant/core/issues/123176)).
+Home Assistant's built-in `apple_tv` integration uses pyatv for AirPlay streaming, which delegates audio decoding to the `miniaudio` library. `miniaudio` frequently fails with `DecodeError('failed to init decoder', -1)` when streaming TTS audio to HomePod - a long-standing regression ([#71569](https://github.com/home-assistant/core/issues/71569), [#97075](https://github.com/home-assistant/core/issues/97075), [#123176](https://github.com/home-assistant/core/issues/123176)).
 
 This integration **bypasses the bug entirely** by:
 1. Generating TTS audio via Google Gemini API
@@ -14,22 +14,22 @@ This integration **bypasses the bug entirely** by:
 ## Features
 
 - Chime + TTS announcements on HomePod via AirPlay
-- **Music injection** — embed a `[music: prompt]` marker in any message to append a generated Lyria 3 music clip
-- **`play_music` service** — generate and play standalone AI music via Gemini Lyria 3
+- **Music injection** - embed a `[music: prompt]` marker in any message to append a generated Lyria 3 music clip
+- **`play_music` service** - generate and play standalone AI music via Gemini Lyria 3
 - Google Gemini TTS with selectable model and voice (30 voices)
 - Style prompts for controlling speech tone and pacing
 - Dynamic range compression presets (off / light / moderate / heavy)
 - Adjustable chime volume relative to TTS in the audio mix
-- Speaker override — target any HomePod(s) from a single entity
-- **HomePod mini volume scaling** — per-speaker volume compensation for quieter mini speakers via an entity label
-- **Quiet mode** — lower volume, whisper prompt, and alternate speakers when a quiet-mode entity is active
-- **Mute mode** — completely suppress announcements when a mute entity is active
-- **Music Assistant health sensor** — surfaces whether configured speakers resolve in MA or fall back to pyatv
-- **Operational entity attributes** — the notify entity exposes effective volume, speakers, mute/quiet state, cache and TTS settings for inspection
+- Speaker override - target any HomePod(s) from a single entity
+- **HomePod mini volume scaling** - per-speaker volume compensation for quieter mini speakers via an entity label
+- **Quiet mode** - lower volume, whisper prompt, and alternate speakers when a quiet-mode entity is active
+- **Mute mode** - completely suppress announcements when a mute entity is active
+- **Music Assistant health sensor** - surfaces whether configured speakers resolve in MA or fall back to pyatv
+- **Operational entity attributes** - the notify entity exposes effective volume, speakers, mute/quiet state, cache and TTS settings for inspection
 - TTS response caching with configurable max size and manual clear
 - Volume control with automatic restore after playback
 - Music Assistant transport for synchronized multi-room AirPlay 2
-- Config flow UI — no YAML configuration needed
+- Config flow UI - no YAML configuration needed
 
 ## Requirements
 
@@ -69,9 +69,9 @@ This integration **bypasses the bug entirely** by:
 | Style prompt | _(empty)_ | Default style instruction (e.g. "Say this calmly") |
 | Chime | On | Play chime sound before announcement |
 | Chime path | bundled soft chime | Path to custom chime MP3/WAV |
-| Chime volume | 1.0 | Relative chime loudness in the mix (0.0–2.0) |
+| Chime volume | 1.0 | Relative chime loudness in the mix (0.0-2.0) |
 | Chime offset | 0 ms | Trim chime tail (negative) or add gap (positive) |
-| Volume | 0.5 | HomePod playback volume (0.0–1.0) |
+| Volume | 0.5 | HomePod playback volume (0.0-1.0) |
 | HomePod mini volume scale | 1.0 | Volume multiplier applied to speakers labeled `homepod_mini` (see below). 1.0 = no scaling |
 | Restore volume | On | Restore previous volume after playback |
 | Compression | moderate | TTS compression preset (off/light/moderate/heavy) |
@@ -148,7 +148,7 @@ data:
     - media_player.homepod_living_room
 ```
 
-When Music Assistant is available, speakers are played via synchronized AirPlay 2. Otherwise pyatv streams to each speaker in parallel via `asyncio.gather` (within ~100–200 ms).
+When Music Assistant is available, speakers are played via synchronized AirPlay 2. Otherwise pyatv streams to each speaker in parallel via `asyncio.gather` (within ~100-200 ms).
 
 ### Clear TTS Cache
 
@@ -166,7 +166,7 @@ data:
   message: "Paczka czeka w skrytce numer 5"
 ```
 
-### Automation Example — AI Bedtime Announcement
+### Automation Example - AI Bedtime Announcement
 
 ```yaml
 - alias: Bedtime announcement
@@ -187,7 +187,7 @@ data:
         prompt: "Say this softly and warmly, like a parent"
 ```
 
-### Automation Example — AI Generated Song
+### Automation Example - AI Generated Song
 
 ```yaml
 - alias: Sing a song
@@ -250,15 +250,15 @@ Mute takes precedence over quiet mode. Both can be overridden per-call via the `
 
 ## HomePod mini Volume Scaling
 
-HomePod minis are quieter than full-size HomePods at the same volume level. To compensate, assign the Home Assistant label **`homepod_mini`** to the mini's `media_player` entity (either the `apple_tv` entity *or* its Music Assistant entity — the integration cross-references them by MAC, so labeling one is enough).
+HomePod minis are quieter than full-size HomePods at the same volume level. To compensate, assign the Home Assistant label **`homepod_mini`** to the mini's `media_player` entity (either the `apple_tv` entity *or* its Music Assistant entity - the integration cross-references them by MAC, so labeling one is enough).
 
-When a labeled speaker is targeted, the configured **HomePod mini volume scale** multiplier is applied to that speaker's volume (clamped to 0.0–1.0). For example, a scale of `1.4` plays minis 40% louder than full-size speakers at the same requested volume. A scale of `1.0` disables scaling.
+When a labeled speaker is targeted, the configured **HomePod mini volume scale** multiplier is applied to that speaker's volume (clamped to 0.0-1.0). For example, a scale of `1.4` plays minis 40% louder than full-size speakers at the same requested volume. A scale of `1.0` disables scaling.
 
 > Volume scaling is applied on the **pyatv** transport (per-device volume). The Music Assistant transport applies a single `announce_volume` to all targets, so a mixed mini / full-size group played via MA shares one volume.
 
 ## Music Assistant Health Sensor
 
-When **default speakers** are configured, the integration adds a sensor (e.g. `sensor.<name>_ma_health`) that reports whether Music Assistant can serve all of them. This makes it easy to spot when playback has silently fallen back to pyatv — for example after an HA restart before Music Assistant has reconnected.
+When **default speakers** are configured, the integration adds a sensor (e.g. `sensor.<name>_ma_health`) that reports whether Music Assistant can serve all of them. This makes it easy to spot when playback has silently fallen back to pyatv - for example after an HA restart before Music Assistant has reconnected.
 
 **States:**
 
@@ -268,7 +268,7 @@ When **default speakers** are configured, the integration adds a sensor (e.g. `s
 | `degraded` | MA is available but only some speakers are (partial synchronized playback) |
 | `failed` | MA service is absent or no speakers are available → pyatv fallback is used |
 
-**Attributes:** `transport` (`music_assistant` / `pyatv_fallback`), `available_count`, `configured_count`, `available`, `unavailable`, and `unresolved_macs` (configured MACs with no matching MA entity — useful for diagnosing discovery problems).
+**Attributes:** `transport` (`music_assistant` / `pyatv_fallback`), `available_count`, `configured_count`, `available`, `unavailable`, and `unresolved_macs` (configured MACs with no matching MA entity - useful for diagnosing discovery problems).
 
 The sensor recomputes automatically as `media_player` entities change state.
 
@@ -278,4 +278,4 @@ The notify entity exposes its effective operational configuration as state attri
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
