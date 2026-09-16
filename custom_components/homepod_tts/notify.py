@@ -15,10 +15,11 @@ from pyatv.interface import AppleTV
 from homeassistant.components.notify import NotifyEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, EventStateChangedData, HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.event import async_track_state_change_event
 
 from .audio import async_generate_wav
 from .cache import (
@@ -50,6 +51,7 @@ from .const import (
     CONF_TTS_MODEL,
     CONF_TTS_PROMPT,
     CONF_TTS_VOICE,
+    CONF_WHISPER_SPEAKERS_ENTITY,
     DEFAULT_CACHE_ENABLED,
     DEFAULT_CACHE_MAX_MB,
     DEFAULT_CHIME_ENABLED,
@@ -69,6 +71,7 @@ from .const import (
     MINI_SPEAKER_LABEL,
 )
 from .tts_client import GeminiTTSClient
+from .whisper import normalize_mac, parse_speaker_list, partition_speakers
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -271,6 +274,10 @@ class HomePodTTSNotifyEntity(NotifyEntity):
         return self._entry.options.get(CONF_QUIET_SPEAKERS, [])
 
     @property
+    def _whisper_entity(self) -> str:
+        return self._entry.options.get(CONF_WHISPER_SPEAKERS_ENTITY, "")
+
+    @property
     def _mini_volume_scale(self) -> float:
         return self._entry.options.get(
             CONF_MINI_VOLUME_SCALE, DEFAULT_MINI_VOLUME_SCALE
@@ -294,6 +301,14 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             self._quiet_speakers if (is_quiet and self._quiet_speakers)
             else self._default_speakers
         )
+        # Per-speaker whisper only applies when global quiet mode is off
+        whisper_macs = self._whisper_macs()
+        if is_quiet or not whisper_macs:
+            effective_normal, effective_whisper = list(effective_speakers), []
+        else:
+            effective_normal, effective_whisper = partition_speakers(
+                effective_speakers, whisper_macs, self._speaker_mac
+            )
 
         return {
             # -- TTS --
@@ -325,6 +340,11 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             "quiet_chime_volume": self._quiet_chime_volume,
             "quiet_prompt": self._quiet_prompt,
             "quiet_speakers": self._quiet_speakers,
+            # -- Per-speaker whisper --
+            "whisper_speakers_entity": self._whisper_entity or None,
+            "whisper_speakers": self._whisper_speaker_list(),
+            "effective_normal_speakers": effective_normal,
+            "effective_whisper_speakers": effective_whisper,
             # -- Cache --
             "cache_enabled": self._cache_enabled,
             "cache_max_mb": self._cache_max_mb,
@@ -345,6 +365,77 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             return False
         state = self._hass.states.get(self._quiet_entity)
         return state is not None and state.state == "on"
+
+    def _whisper_speaker_list(self) -> list[str]:
+        """Raw speaker list (MACs or entity_ids) from the whisper entity."""
+        if not self._whisper_entity:
+            return []
+        state = self._hass.states.get(self._whisper_entity)
+        if state is None:
+            return []
+        return parse_speaker_list(state.attributes.get("speakers"), state.state)
+
+    def _whisper_macs(self) -> set[str]:
+        """Normalized MACs of the speakers that should whisper right now."""
+        macs: set[str] = set()
+        for item in self._whisper_speaker_list():
+            mac = self._speaker_mac(item)
+            if mac is None:
+                _LOGGER.warning(
+                    "Whisper speaker %s from %s could not be resolved",
+                    item, self._whisper_entity,
+                )
+            else:
+                macs.add(mac)
+        return macs
+
+    def _speaker_mac(self, target: str) -> str | None:
+        """Resolve a MAC, apple_tv or Music Assistant media_player to a MAC."""
+        mac = normalize_mac(target)
+        if mac is not None:
+            return mac
+        registry = er.async_get(self._hass)
+        entry = registry.async_get(target)
+        if entry is None:
+            return None
+        if entry.platform == "music_assistant":
+            uid = entry.unique_id or ""
+            return normalize_mac(uid[2:]) if uid.startswith("ap") else None
+        if entry.platform == "apple_tv" and entry.config_entry_id:
+            atv_entry = self._hass.config_entries.async_get_entry(
+                entry.config_entry_id
+            )
+            if atv_entry is not None:
+                return normalize_mac(atv_entry.unique_id or "")
+        return None
+
+    def _target_list(self, speaker: str | list[str] | None) -> list[str]:
+        """The speakers an announcement would go to, before transport resolution."""
+        if not speaker:
+            return list(self._default_speakers) or [self._identifier]
+        if isinstance(speaker, str):
+            return [speaker]
+        return list(speaker)
+
+    async def async_added_to_hass(self) -> None:
+        """Refresh attributes when a mode entity changes, so they aren't stale."""
+        await super().async_added_to_hass()
+        watched = [
+            e for e in (self._mute_entity, self._quiet_entity, self._whisper_entity)
+            if e
+        ]
+        if watched:
+            self.async_on_remove(
+                async_track_state_change_event(
+                    self._hass, watched, self._async_mode_entity_changed
+                )
+            )
+
+    @callback
+    def _async_mode_entity_changed(
+        self, event: Event[EventStateChangedData]
+    ) -> None:
+        self.async_write_ha_state()
 
     # -- TTS client --
 
@@ -663,7 +754,12 @@ class HomePodTTSNotifyEntity(NotifyEntity):
         seen: set[str] = set()
         result: list[str] = []
         for s in speaker:
-            identifier = self._resolve_speaker_identifier(s)
+            # MAC identifiers (e.g. a whisper split of the default speakers)
+            # are already what pyatv needs; only entity_ids need resolving.
+            if normalize_mac(s) is not None:
+                identifier = s
+            else:
+                identifier = self._resolve_speaker_identifier(s)
             if identifier not in seen:
                 seen.add(identifier)
                 result.append(identifier)
@@ -792,12 +888,13 @@ class HomePodTTSNotifyEntity(NotifyEntity):
 
         effective_prompt = prompt if prompt is not None else self._default_prompt
 
-        # -- Quiet mode --
+        # Playback groups: (speaker, prompt, volume, chime_volume). One group
+        # normally; two when per-speaker whisper splits the targets.
+        groups: list[tuple[str | list[str] | None, str, float, float]]
+
+        # -- Quiet mode (global) --
         is_quiet = quiet if quiet is not None else self._is_quiet()
         if is_quiet:
-            effective_prompt = self._quiet_prompt
-            chime_volume = self._quiet_chime_volume
-            volume = self._quiet_volume
             # Override speakers if quiet speakers configured and no explicit speaker
             if not speaker and self._quiet_speakers:
                 speaker = self._quiet_speakers
@@ -805,6 +902,31 @@ class HomePodTTSNotifyEntity(NotifyEntity):
                     "Quiet mode: using quiet speakers %s", speaker
                 )
             _LOGGER.debug("Quiet mode active")
+            groups = [(
+                speaker, self._quiet_prompt, self._quiet_volume,
+                self._quiet_chime_volume,
+            )]
+        else:
+            groups = [(speaker, effective_prompt, volume, chime_volume)]
+            # -- Per-speaker whisper (skipped when quiet=False is forced) --
+            whisper_macs = self._whisper_macs() if quiet is None else set()
+            if whisper_macs:
+                normal, whisper = partition_speakers(
+                    self._target_list(speaker), whisper_macs, self._speaker_mac
+                )
+                if whisper:
+                    _LOGGER.debug(
+                        "Whisper split: normal=%s whisper=%s", normal, whisper
+                    )
+                    groups = []
+                    if normal:
+                        groups.append(
+                            (normal, effective_prompt, volume, chime_volume)
+                        )
+                    groups.append((
+                        whisper, self._quiet_prompt, self._quiet_volume,
+                        self._quiet_chime_volume,
+                    ))
         use_ma = self._has_music_assistant()
 
         # Parse music injection marker [music: prompt] from message
@@ -816,50 +938,28 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             )
 
         async with self._lock:
-            tmp_path = None
+            tmp_paths: list[str] = []
             tmp_music_path = None
             try:
                 tts_client = self._get_tts_client()
 
-                # Check cache (keyed on the clean message without music marker)
-                key = cache_key(
-                    clean_message, tts_client.voice, tts_client.model,
-                    effective_prompt,
+                # Synthesize each distinct prompt once (cached), concurrently
+                # with music generation.
+                prompts = list(dict.fromkeys(g[1] for g in groups))
+                pcm_list, music_bytes = await asyncio.gather(
+                    asyncio.gather(
+                        *(
+                            self._async_get_tts_pcm(tts_client, clean_message, p)
+                            for p in prompts
+                        )
+                    ),
+                    tts_client.generate_music(music_prompt)
+                    if music_prompt
+                    else asyncio.sleep(0),
                 )
-                tts_pcm = None
+                pcm_by_prompt = dict(zip(prompts, pcm_list))
                 if self._cache_enabled:
-                    tts_pcm = await get_cached(self._hass, key)
-
-                # Fire TTS synthesis and music generation concurrently
-                if tts_pcm is None and music_prompt:
-                    _LOGGER.debug(
-                        "Synthesizing TTS + generating music concurrently"
-                    )
-                    tts_pcm, music_bytes = await asyncio.gather(
-                        tts_client.synthesize(
-                            clean_message, prompt=effective_prompt or None
-                        ),
-                        tts_client.generate_music(music_prompt),
-                    )
-                    if self._cache_enabled:
-                        await put_cache(self._hass, key, tts_pcm)
-                        await enforce_max_size(self._hass, self._cache_max_mb)
-                elif tts_pcm is None:
-                    _LOGGER.debug("Synthesizing TTS for: %s", clean_message)
-                    tts_pcm = await tts_client.synthesize(
-                        clean_message, prompt=effective_prompt or None
-                    )
-                    music_bytes = None
-                    if self._cache_enabled:
-                        await put_cache(self._hass, key, tts_pcm)
-                        await enforce_max_size(self._hass, self._cache_max_mb)
-                else:
-                    # Cache hit for TTS — still need to generate music if requested
-                    if music_prompt:
-                        _LOGGER.debug("TTS cache hit; generating music separately")
-                        music_bytes = await tts_client.generate_music(music_prompt)
-                    else:
-                        music_bytes = None
+                    await enforce_max_size(self._hass, self._cache_max_mb)
 
                 # Save music to temp file if we have it
                 if music_bytes:
@@ -871,68 +971,101 @@ class HomePodTTSNotifyEntity(NotifyEntity):
                         _write_bytes, tmp_music_path, music_bytes
                     )
 
-                fd, tmp_path = tempfile.mkstemp(
-                    suffix=".wav", prefix="homepod_tts_"
-                )
-                os.close(fd)
-
                 chime_path = self._chime_path if chime else None
-                await async_generate_wav(
-                    self._hass,
-                    tts_pcm,
-                    chime_path,
-                    tmp_path,
-                    compress_preset=compress,
-                    offset_ms=offset,
-                    chime_volume=chime_volume,
-                    music_path=tmp_music_path,
-                    music_position=music_position,
-                )
-
-                if use_ma:
-                    # Music Assistant transport (synchronized AirPlay 2)
-                    ma_speakers = self._resolve_ma_speakers(speaker)
-                    if not ma_speakers:
-                        _LOGGER.error(
-                            "No Music Assistant speakers found, "
-                            "falling back to pyatv"
-                        )
-                        use_ma = False
-
-                if use_ma:
-                    await self._async_play_via_ma(
-                        tmp_path, ma_speakers, volume
+                deliveries = []
+                for group_speaker, group_prompt, group_volume, group_chime_volume in groups:
+                    fd, tmp_path = tempfile.mkstemp(
+                        suffix=".wav", prefix="homepod_tts_"
                     )
-                else:
-                    # pyatv transport (fallback)
-                    target_ids = self._resolve_speakers_pyatv(speaker)
-                    if len(target_ids) == 1:
-                        await self._async_stream_to_device(
-                            target_ids[0], tmp_path, volume
+                    os.close(fd)
+                    tmp_paths.append(tmp_path)
+                    await async_generate_wav(
+                        self._hass,
+                        pcm_by_prompt[group_prompt],
+                        chime_path,
+                        tmp_path,
+                        compress_preset=compress,
+                        offset_ms=offset,
+                        chime_volume=group_chime_volume,
+                        music_path=tmp_music_path,
+                        music_position=music_position,
+                    )
+                    deliveries.append(
+                        self._async_deliver(
+                            tmp_path, group_speaker, group_volume, use_ma
                         )
-                    else:
-                        _LOGGER.debug(
-                            "Streaming to %d speakers in parallel (pyatv)",
-                            len(target_ids),
-                        )
-                        await asyncio.gather(
-                            *(
-                                self._async_stream_to_device(
-                                    tid, tmp_path, volume
-                                )
-                                for tid in target_ids
-                            )
+                    )
+
+                # Start all groups together; one failing group must not
+                # silence the other.
+                results = await asyncio.gather(
+                    *deliveries, return_exceptions=True
+                )
+                for result in results:
+                    if isinstance(result, BaseException):
+                        _LOGGER.error(
+                            "Failed to play TTS on a speaker group",
+                            exc_info=result,
                         )
 
             except Exception:
                 _LOGGER.exception("Failed to send TTS to HomePod")
             finally:
-                if tmp_path is not None:
+                for tmp_path in tmp_paths:
                     with contextlib.suppress(FileNotFoundError):
                         os.unlink(tmp_path)
                 if tmp_music_path is not None:
                     with contextlib.suppress(FileNotFoundError):
                         os.unlink(tmp_music_path)
+
+    async def _async_get_tts_pcm(
+        self, tts_client: GeminiTTSClient, message: str, prompt: str
+    ) -> bytes:
+        """Return TTS PCM for message+prompt, from cache or freshly synthesized."""
+        # Cache is keyed on the clean message without music marker
+        key = cache_key(message, tts_client.voice, tts_client.model, prompt)
+        if self._cache_enabled:
+            cached = await get_cached(self._hass, key)
+            if cached is not None:
+                return cached
+        _LOGGER.debug("Synthesizing TTS for: %s (prompt=%r)", message, prompt)
+        pcm = await tts_client.synthesize(message, prompt=prompt or None)
+        if self._cache_enabled:
+            await put_cache(self._hass, key, pcm)
+        return pcm
+
+    async def _async_deliver(
+        self,
+        wav_path: str,
+        speaker: str | list[str] | None,
+        volume: float,
+        use_ma: bool,
+    ) -> None:
+        """Play a rendered WAV on speakers via Music Assistant or pyatv."""
+        if use_ma:
+            # Music Assistant transport (synchronized AirPlay 2)
+            ma_speakers = self._resolve_ma_speakers(speaker)
+            if ma_speakers:
+                await self._async_play_via_ma(wav_path, ma_speakers, volume)
+                return
+            _LOGGER.error(
+                "No Music Assistant speakers found, falling back to pyatv"
+            )
+
+        # pyatv transport (fallback)
+        target_ids = self._resolve_speakers_pyatv(speaker)
+        if len(target_ids) == 1:
+            await self._async_stream_to_device(target_ids[0], wav_path, volume)
+        else:
+            _LOGGER.debug(
+                "Streaming to %d speakers in parallel (pyatv)", len(target_ids)
+            )
+            await asyncio.gather(
+                *(
+                    self._async_stream_to_device(tid, wav_path, volume)
+                    for tid in target_ids
+                )
+            )
 
     async def async_play_music(
         self,

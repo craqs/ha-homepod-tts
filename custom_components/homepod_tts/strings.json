@@ -42,6 +42,7 @@
           "quiet_chime_volume": "Quiet mode chime volume",
           "quiet_volume": "Quiet mode announcement volume",
           "quiet_speakers": "Quiet mode default speakers",
+          "whisper_speakers_entity": "Whisper speakers entity (its 'speakers' attribute lists the speakers that whisper; the rest play normally)",
           "cache_enabled": "Cache TTS audio (avoid re-generating same content)",
           "cache_max_mb": "Maximum cache size"
         }

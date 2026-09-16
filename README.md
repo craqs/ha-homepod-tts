@@ -23,6 +23,7 @@ This integration **bypasses the bug entirely** by:
 - Speaker override - target any HomePod(s) from a single entity
 - **HomePod mini volume scaling** - per-speaker volume compensation for quieter mini speakers via an entity label
 - **Quiet mode** - lower volume, whisper prompt, and alternate speakers when a quiet-mode entity is active
+- **Per-speaker whisper** - an entity lists the speakers that whisper right now (e.g. rooms with someone on a call); the rest of the announcement plays normally
 - **Mute mode** - completely suppress announcements when a mute entity is active
 - **Music Assistant health sensor** - surfaces whether configured speakers resolve in MA or fall back to pyatv
 - **Operational entity attributes** - the notify entity exposes effective volume, speakers, mute/quiet state, cache and TTS settings for inspection
@@ -84,6 +85,7 @@ This integration **bypasses the bug entirely** by:
 | Quiet prompt | _(whisper)_ | Style prompt used in quiet mode |
 | Quiet chime volume | 0.3 | Chime volume used in quiet mode |
 | Quiet speakers | _(none)_ | Alternate speaker(s) used in quiet mode |
+| Whisper speakers entity | _(none)_ | Sensor whose `speakers` attribute lists the speakers that whisper right now (see below) |
 
 ## Usage
 
@@ -248,6 +250,35 @@ Lyria 3 MP3 (optional, from [music:] marker or play_music service) ────�
 
 Mute takes precedence over quiet mode. Both can be overridden per-call via the `quiet:` field on `homepod_tts.say`.
 
+### Per-speaker whisper
+
+Quiet mode is all-or-nothing. When only some rooms need quiet (someone is on a call in one room), point the **whisper speakers entity** option at a sensor whose `speakers` attribute lists the speakers that should whisper. Each announcement is then split in two:
+
+- speakers on the list play the **quiet prompt** at the **quiet volume** and **quiet chime volume**
+- all other targeted speakers play the normal announcement (caller's prompt/volume or the defaults)
+
+Both clips are synthesized in parallel (and cached separately) and the two groups start together. If every targeted speaker is on the list, or none is, the announcement is a single play as before. The split applies to default speakers and to explicit `speaker:` targets alike.
+
+List entries may be MAC identifiers, `apple_tv` media_player entities or Music Assistant media_player entities. If the entity has no `speakers` attribute, its state is read as a comma-separated list; `unknown`/`unavailable` means nobody whispers.
+
+Precedence: **mute** > **global quiet mode** (quiet speakers + whisper everywhere) > **per-speaker whisper**. `quiet: true` on `say` forces global quiet; `quiet: false` disables both quiet mode and per-speaker whisper for that call.
+
+```yaml
+template:
+  - binary_sensor:
+      - name: "Tomek in call"
+        unique_id: tomek_in_call
+        delay_off: "00:00:45"
+        state: "{{ is_state('binary_sensor.macbook_audio_input_in_use', 'on') }}"
+  - sensor:
+      - name: "Chime whisper speakers"
+        unique_id: chime_whisper_speakers
+        state: "{{ 'living_room' if is_state('binary_sensor.tomek_in_call', 'on') else 'none' }}"
+        attributes:
+          speakers: >
+            {{ ['media_player.homepod_l'] if is_state('binary_sensor.tomek_in_call', 'on') else [] }}
+```
+
 ## HomePod mini Volume Scaling
 
 HomePod minis are quieter than full-size HomePods at the same volume level. To compensate, assign the Home Assistant label **`homepod_mini`** to the mini's `media_player` entity (either the `apple_tv` entity *or* its Music Assistant entity - the integration cross-references them by MAC, so labeling one is enough).
@@ -274,7 +305,14 @@ The sensor recomputes automatically as `media_player` entities change state.
 
 ## Entity Attributes
 
-The notify entity exposes its effective operational configuration as state attributes for dashboards and troubleshooting, including: `tts_model`, `tts_voice`, `tts_prompt`, `volume`, `mini_volume_scale`, `effective_volume`, `chime_enabled`, `chime_volume`, `effective_chime_volume`, `compress_tts`, `default_speakers`, `effective_speakers`, `is_muted`, `is_quiet`, the quiet-mode overrides, and the cache settings. The `effective_*` values reflect quiet-mode overrides when quiet mode is active.
+The notify entity exposes its effective operational configuration as state attributes for dashboards and troubleshooting, including: `tts_model`, `tts_voice`, `tts_prompt`, `volume`, `mini_volume_scale`, `effective_volume`, `chime_enabled`, `chime_volume`, `effective_chime_volume`, `compress_tts`, `default_speakers`, `effective_speakers`, `is_muted`, `is_quiet`, the quiet-mode overrides, `whisper_speakers_entity`, `whisper_speakers`, `effective_normal_speakers`, `effective_whisper_speakers`, and the cache settings. The `effective_*` values reflect quiet-mode overrides when quiet mode is active and the per-speaker whisper split of the default speakers otherwise. Attributes refresh whenever the mute, quiet or whisper entity changes.
+
+## Development
+
+```bash
+pip install -r requirements_test.txt
+pytest
+```
 
 ## License
 

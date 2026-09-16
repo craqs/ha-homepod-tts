@@ -84,7 +84,7 @@ say:
           mode: slider
     quiet:
       name: Quiet mode
-      description: Force quiet mode for this call (whisper prompt, lower volume). Overrides the quiet mode entity state.
+      description: true forces quiet mode on all speakers for this call (whisper prompt, lower volume); false disables quiet mode and per-speaker whisper. Overrides the quiet mode and whisper speakers entities.
       required: false
       selector:
         boolean:
