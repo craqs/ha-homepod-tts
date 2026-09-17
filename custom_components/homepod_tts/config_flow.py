@@ -49,6 +49,7 @@ from .const import (
     CONF_TTS_MODEL,
     CONF_TTS_PROMPT,
     CONF_TTS_VOICE,
+    CONF_WHISPER_SPEAKERS_ENTITY,
     COMPRESS_PRESETS,
     DEFAULT_CACHE_ENABLED,
     DEFAULT_CACHE_MAX_MB,
@@ -361,6 +362,17 @@ class HomePodTTSOptionsFlow(OptionsFlow):
                         multiple=True,
                         mode=SelectSelectorMode.LIST,
                     )
+                ),
+                # -- Per-speaker whisper --
+                vol.Optional(
+                    CONF_WHISPER_SPEAKERS_ENTITY,
+                    description={
+                        "suggested_value": options.get(
+                            CONF_WHISPER_SPEAKERS_ENTITY, ""
+                        )
+                    },
+                ): EntitySelector(
+                    EntitySelectorConfig(domain=["sensor", "input_text"])
                 ),
                 # -- Cache --
                 vol.Optional(

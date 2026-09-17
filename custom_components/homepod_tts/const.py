@@ -22,6 +22,8 @@ CONF_QUIET_PROMPT = "quiet_prompt"
 CONF_QUIET_CHIME_VOLUME = "quiet_chime_volume"
 CONF_QUIET_VOLUME = "quiet_volume"
 CONF_QUIET_SPEAKERS = "quiet_speakers"
+# Entity listing the speakers that should whisper right now (per-speaker quiet)
+CONF_WHISPER_SPEAKERS_ENTITY = "whisper_speakers_entity"
 
 DEFAULT_CHIME_ENABLED = True
 DEFAULT_CHIME_VOLUME = 1.0
