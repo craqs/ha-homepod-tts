@@ -951,15 +951,28 @@ class HomePodTTSNotifyEntity(NotifyEntity):
                         *(
                             self._async_get_tts_pcm(tts_client, clean_message, p)
                             for p in prompts
-                        )
+                        ),
+                        return_exceptions=True,
                     ),
                     tts_client.generate_music(music_prompt)
                     if music_prompt
                     else asyncio.sleep(0),
                 )
-                pcm_by_prompt = dict(zip(prompts, pcm_list))
-                if self._cache_enabled:
+                pcm_by_prompt: dict[str, bytes] = {}
+                for p, pcm in zip(prompts, pcm_list):
+                    if isinstance(pcm, BaseException):
+                        _LOGGER.error(
+                            "TTS synthesis failed for prompt %r, skipping its"
+                            " speakers: %s", p, pcm,
+                        )
+                    else:
+                        pcm_by_prompt[p] = pcm
+                if self._cache_enabled and pcm_by_prompt:
                     await enforce_max_size(self._hass, self._cache_max_mb)
+                # A failed whisper clip must not silence the normal rooms
+                groups = [g for g in groups if g[1] in pcm_by_prompt]
+                if not groups:
+                    return
 
                 # Save music to temp file if we have it
                 if music_bytes:
@@ -1029,7 +1042,19 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             if cached is not None:
                 return cached
         _LOGGER.debug("Synthesizing TTS for: %s (prompt=%r)", message, prompt)
-        pcm = await tts_client.synthesize(message, prompt=prompt or None)
+        try:
+            pcm = await tts_client.synthesize(message, prompt=prompt or None)
+        except RuntimeError as err:
+            if not prompt:
+                raise
+            # Gemini sometimes refuses a style prompt + text combination
+            # (finishReason SAFETY) that it speaks fine unstyled; the caller
+            # still applies the group's volume, so a whisper group stays quiet.
+            _LOGGER.warning(
+                "TTS with style prompt %r failed (%s); retrying without the"
+                " prompt", prompt, err,
+            )
+            return await self._async_get_tts_pcm(tts_client, message, "")
         if self._cache_enabled:
             await put_cache(self._hass, key, pcm)
         return pcm

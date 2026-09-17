@@ -257,7 +257,7 @@ Quiet mode is all-or-nothing. When only some rooms need quiet (someone is on a c
 - speakers on the list play the **quiet prompt** at the **quiet volume** and **quiet chime volume**
 - all other targeted speakers play the normal announcement (caller's prompt/volume or the defaults)
 
-Both clips are synthesized in parallel (and cached separately) and the two groups start together. If every targeted speaker is on the list, or none is, the announcement is a single play as before. The split applies to default speakers and to explicit `speaker:` targets alike.
+Both clips are synthesized in parallel (and cached separately) and the two groups start together. Gemini occasionally refuses a style prompt + text combination (`finishReason: SAFETY`) that it speaks fine unstyled; the integration then retries without the style prompt (the group keeps its volume, so a whisper group stays quiet), and if a group still has no audio only that group is skipped - the other rooms still hear the announcement. If every targeted speaker is on the list, or none is, the announcement is a single play as before. The split applies to default speakers and to explicit `speaker:` targets alike.
 
 List entries may be MAC identifiers, `apple_tv` media_player entities or Music Assistant media_player entities. If the entity has no `speakers` attribute, its state is read as a comma-separated list; `unknown`/`unavailable` means nobody whispers.
 
