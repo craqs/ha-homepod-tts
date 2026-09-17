@@ -68,8 +68,12 @@ class GeminiTTSClient:
                 "inlineData"
             ]["data"]
         except (KeyError, IndexError) as err:
+            # e.g. finishReason SAFETY: a candidate with empty content
+            candidates = data.get("candidates") or [{}]
             raise RuntimeError(
-                f"Unexpected Gemini TTS response structure: {err}"
+                "No audio in Gemini TTS response "
+                f"(finishReason={candidates[0].get('finishReason')}, "
+                f"promptFeedback={data.get('promptFeedback')}, missing {err})"
             ) from err
 
         return base64.b64decode(audio_b64)

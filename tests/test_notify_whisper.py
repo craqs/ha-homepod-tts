@@ -42,11 +42,16 @@ def atv(room: str) -> str:
 
 
 class FakeTTSClient:
+    # Prompts (None = unstyled) Gemini "refuses", like finishReason SAFETY
+    fail_prompts: set = set()
+
     def __init__(self, api_key, session, voice="Aoede", model="m") -> None:
         self.voice = voice
         self.model = model
 
     async def synthesize(self, text, prompt=None):
+        if prompt in FakeTTSClient.fail_prompts:
+            raise RuntimeError("No audio in Gemini TTS response (finishReason=SAFETY)")
         return f"{prompt or ''}|{text}".encode()
 
     async def generate_music(self, prompt):
@@ -56,6 +61,13 @@ class FakeTTSClient:
 async def fake_generate_wav(hass, tts_pcm, chime_path, output_path, **kwargs):
     with open(output_path, "wb") as f:
         f.write(tts_pcm)
+
+
+@pytest.fixture(autouse=True)
+def reset_fake_failures():
+    FakeTTSClient.fail_prompts = set()
+    yield
+    FakeTTSClient.fail_prompts = set()
 
 
 @pytest.fixture
@@ -282,3 +294,42 @@ async def test_options_flow_saves_whisper_entity(hass, entity):
     )
     await hass.async_block_till_done()
     assert entry.options["whisper_speakers_entity"] == "sensor.other"
+
+
+async def test_refused_whisper_prompt_falls_back_unstyled_at_quiet_volume(
+    hass, entity
+):
+    FakeTTSClient.fail_prompts = {QUIET_PROMPT}
+    set_whisper(hass, [atv("living_room"), atv("hall")])
+    await entity.async_play_tts("hello")
+    plays = sorted(entity.test_plays, key=lambda p: p["volume"])
+    assert plays == [
+        {
+            "speakers": sorted([ma("living_room"), ma("hall")]),
+            "volume": 0.25,
+            "prompt": "",
+        },
+        {
+            "speakers": sorted([ma("jacob"), ma("bedroom")]),
+            "volume": 0.3,
+            "prompt": "",
+        },
+    ]
+
+
+async def test_failed_whisper_clip_does_not_silence_normal_rooms(hass, entity):
+    FakeTTSClient.fail_prompts = {QUIET_PROMPT, "Cheerful", None}
+    set_whisper(hass, [atv("bedroom")])
+    await entity.async_play_tts(
+        "hello", speaker=[atv("bedroom"), atv("jacob")], prompt="Cheerful"
+    )
+    assert entity.test_plays == []
+
+    # only the whisper side unrecoverable: normal rooms still play
+    FakeTTSClient.fail_prompts = {QUIET_PROMPT, None}
+    await entity.async_play_tts(
+        "hello", speaker=[atv("bedroom"), atv("jacob")], prompt="Cheerful"
+    )
+    assert entity.test_plays == [
+        {"speakers": [ma("jacob")], "volume": 0.3, "prompt": "Cheerful"}
+    ]
