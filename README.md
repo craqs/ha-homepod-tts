@@ -287,6 +287,19 @@ When a labeled speaker is targeted, the configured **HomePod mini volume scale**
 
 > Volume scaling is applied on the **pyatv** transport (per-device volume). The Music Assistant transport applies a single `announce_volume` to all targets, so a mixed mini / full-size group played via MA shares one volume.
 
+## Music Assistant sync groups
+
+Since Music Assistant 2.10 an announcement sent to several AirPlay players starts one
+independent session per speaker, so rooms can play seconds apart. A Music Assistant
+**sync group** plays the clip through one synchronized stream instead.
+
+The integration uses a sync group automatically when one exists whose members are
+**exactly** the speakers of a delivery (after whisper splitting and availability
+filtering); otherwise it announces to the individual players as before. To opt in,
+create sync groups in Music Assistant (Settings > Players > Add group player) for the
+speaker combinations you use - with 4 speakers that is at most 11 groups. Deleting a
+group turns it off again. No configuration is needed.
+
 ## Music Assistant Health Sensor
 
 When **default speakers** are configured, the integration adds a sensor (e.g. `sensor.<name>_ma_health`) that reports whether Music Assistant can serve all of them. This makes it easy to spot when playback has silently fallen back to pyatv - for example after an HA restart before Music Assistant has reconnected.

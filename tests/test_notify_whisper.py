@@ -333,3 +333,51 @@ async def test_failed_whisper_clip_does_not_silence_normal_rooms(hass, entity):
     assert entity.test_plays == [
         {"speakers": [ma("jacob")], "volume": 0.3, "prompt": "Cheerful"}
     ]
+
+
+# -- Music Assistant sync groups --
+
+
+def add_group(hass: HomeAssistant, name: str, rooms: list[str], state="idle") -> str:
+    """Register an MA sync group player with the given member rooms."""
+    entity_id = er.async_get(hass).async_get_or_create(
+        "media_player", "music_assistant", f"syncgroup_{name}",
+        suggested_object_id=f"ma_group_{name}",
+    ).entity_id
+    hass.states.async_set(
+        entity_id, state, {"group_members": [ma(r) for r in rooms]}
+    )
+    return entity_id
+
+
+async def test_matching_sync_group_replaces_individual_speakers(hass, entity):
+    group = add_group(hass, "all", list(ROOMS.values()))
+    add_group(hass, "pair", ["living_room", "bedroom"])
+    await entity.async_play_tts("hello")
+    assert [p["speakers"] for p in entity.test_plays] == [[group]]
+
+
+async def test_whisper_halves_each_use_their_own_sync_group(hass, entity):
+    add_group(hass, "all", list(ROOMS.values()))
+    whisper = add_group(hass, "lr_hall", ["living_room", "hall"])
+    normal = add_group(hass, "bed_jacob", ["bedroom", "jacob"])
+    set_whisper(hass, [LIVING_ROOM, HALL])
+    await entity.async_play_tts("hello")
+    by_prompt = {p["prompt"]: p["speakers"] for p in entity.test_plays}
+    assert by_prompt == {QUIET_PROMPT: [whisper], "": [normal]}
+
+
+async def test_no_exact_sync_group_keeps_individual_speakers(hass, entity):
+    add_group(hass, "all", list(ROOMS.values()))
+    await entity.async_play_tts("hello", speaker=[LIVING_ROOM, HALL])
+    assert [p["speakers"] for p in entity.test_plays] == [
+        sorted([ma("living_room"), ma("hall")])
+    ]
+
+
+async def test_unavailable_sync_group_is_ignored(hass, entity):
+    add_group(hass, "all", list(ROOMS.values()), state="unavailable")
+    await entity.async_play_tts("hello")
+    assert [p["speakers"] for p in entity.test_plays] == [
+        sorted(ma(r) for r in ROOMS.values())
+    ]
