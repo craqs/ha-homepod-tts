@@ -586,6 +586,49 @@ class HomePodTTSNotifyEntity(NotifyEntity):
         )
         return []
 
+    # -- Music Assistant sync groups --
+
+    def _ma_group_members(self, entity_id: str) -> set[str]:
+        """Return the member entity_ids of an MA group player.
+
+        HA only publishes ``group_members`` as a state attribute for players
+        that support grouping, which an MA group player does not - so the
+        entity object is asked first and the attribute is only a fallback.
+        """
+        component = self._hass.data.get("media_player")
+        entity = component.get_entity(entity_id) if component else None
+        members = getattr(entity, "group_members", None)
+        if members is None:
+            state = self._hass.states.get(entity_id)
+            members = state.attributes.get("group_members") if state else None
+        return set(members or [])
+
+    def _find_ma_group(self, speakers: list[str]) -> str | None:
+        """Return the MA sync group whose members are exactly ``speakers``.
+
+        Announcing to N players starts N independent AirPlay sessions that
+        drift seconds apart (MA 2.10+); a sync group plays the clip through
+        one synchronized stream. Groups are matched by member set, so creating
+        the group in MA is all it takes to opt a speaker combination in.
+        """
+        if len(speakers) < 2:
+            return None
+        target = set(speakers)
+        registry = er.async_get(self._hass)
+        for entry in registry.entities.values():
+            if (
+                entry.platform != "music_assistant"
+                or entry.domain != "media_player"
+                or not (entry.unique_id or "").startswith("syncgroup_")
+            ):
+                continue
+            state = self._hass.states.get(entry.entity_id)
+            if state is None or state.state == "unavailable":
+                continue
+            if self._ma_group_members(entry.entity_id) == target:
+                return entry.entity_id
+        return None
+
     # -- HomePod mini volume scaling --
 
     def _is_mini(self, entity_id: str | None) -> bool:
@@ -1071,6 +1114,12 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             # Music Assistant transport (synchronized AirPlay 2)
             ma_speakers = self._resolve_ma_speakers(speaker)
             if ma_speakers:
+                group = self._find_ma_group(ma_speakers)
+                if group:
+                    _LOGGER.debug(
+                        "Using MA sync group %s for %s", group, ma_speakers
+                    )
+                    ma_speakers = [group]
                 await self._async_play_via_ma(wav_path, ma_speakers, volume)
                 return
             _LOGGER.error(
