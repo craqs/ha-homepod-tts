@@ -156,6 +156,10 @@ def _parse_music_injection(
 
 # Directory under /config/www/ for serving WAVs to Music Assistant
 MA_SERVE_DIR = "homepod_tts"
+# An MA sync group lingers IDLE_GRACE_SECONDS (10 s) after its clip before it
+# releases its members; wait a little longer than that, then play anyway.
+MA_UNSYNC_TIMEOUT = 12.0
+MA_UNSYNC_POLL = 0.5
 
 
 def _write_bytes(path: str, data: bytes) -> None:
@@ -602,6 +606,38 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             state = self._hass.states.get(entity_id)
             members = state.attributes.get("group_members") if state else None
         return set(members or [])
+
+    def _ma_lingering_sync(self, speakers: list[str]) -> list[str]:
+        """Return the speakers still tied into a sync other than ``speakers``."""
+        target = set(speakers)
+        lingering = []
+        for speaker in speakers:
+            state = self._hass.states.get(speaker)
+            if state is None or state.state == "playing":
+                # real playback, not the tail of an earlier announcement
+                continue
+            members = self._ma_group_members(speaker)
+            if members and members != target:
+                lingering.append(speaker)
+        return lingering
+
+    async def _async_wait_ma_unsynced(self, speakers: list[str]) -> None:
+        """Wait until no target speaker is left in an earlier announcement's sync.
+
+        A sync group formed while another one is still in its idle grace
+        inherits that group's members, so the clip leaks into rooms that were
+        not targeted (e.g. a living-room-only clip right after a whole-house
+        one also plays in the kids' room).
+        """
+        deadline = self._hass.loop.time() + MA_UNSYNC_TIMEOUT
+        while lingering := self._ma_lingering_sync(speakers):
+            if self._hass.loop.time() >= deadline:
+                _LOGGER.warning(
+                    "MA speakers still synced elsewhere after %.0f s, playing"
+                    " anyway: %s", MA_UNSYNC_TIMEOUT, lingering,
+                )
+                return
+            await asyncio.sleep(MA_UNSYNC_POLL)
 
     def _find_ma_group(self, speakers: list[str]) -> str | None:
         """Return the MA sync group whose members are exactly ``speakers``.
@@ -1114,6 +1150,7 @@ class HomePodTTSNotifyEntity(NotifyEntity):
             # Music Assistant transport (synchronized AirPlay 2)
             ma_speakers = self._resolve_ma_speakers(speaker)
             if ma_speakers:
+                await self._async_wait_ma_unsynced(ma_speakers)
                 group = self._find_ma_group(ma_speakers)
                 if group:
                     _LOGGER.debug(
