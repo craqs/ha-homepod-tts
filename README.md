@@ -300,6 +300,11 @@ create sync groups in Music Assistant (Settings > Players > Add group player) fo
 speaker combinations you use - with 4 speakers that is at most 11 groups. Deleting a
 group turns it off again. No configuration is needed.
 
+Music Assistant keeps a sync group formed for about 10 s after its clip. A different
+group formed on the same speakers inside that window would inherit the old members and
+leak the clip into rooms that were not targeted, so before each Music Assistant delivery
+the integration waits (up to 12 s) until the target speakers are free of an earlier sync.
+
 ## Music Assistant Health Sensor
 
 When **default speakers** are configured, the integration adds a sensor (e.g. `sensor.<name>_ma_health`) that reports whether Music Assistant can serve all of them. This makes it easy to spot when playback has silently fallen back to pyatv - for example after an HA restart before Music Assistant has reconnected.

@@ -381,3 +381,36 @@ async def test_unavailable_sync_group_is_ignored(hass, entity):
     assert [p["speakers"] for p in entity.test_plays] == [
         sorted(ma(r) for r in ROOMS.values())
     ]
+
+
+async def test_waits_for_an_earlier_announcement_sync_to_dissolve(hass, entity):
+    everyone = [ma(r) for r in ROOMS.values()]
+    for room in ROOMS.values():
+        hass.states.async_set(ma(room), "idle", {"group_members": everyone})
+
+    async def dissolve():
+        for room in ROOMS.values():
+            hass.states.async_set(ma(room), "idle", {"group_members": []})
+
+    with patch("custom_components.homepod_tts.notify.MA_UNSYNC_POLL", 0.01):
+        hass.loop.call_later(0.05, lambda: hass.async_create_task(dissolve()))
+        await entity.async_play_tts("hello", speaker=[LIVING_ROOM, BEDROOM])
+    assert hass.states.get(ma("living_room")).attributes["group_members"] == []
+    assert len(entity.test_plays) == 1
+
+
+async def test_lingering_sync_only_delays_playback(hass, entity):
+    everyone = [ma(r) for r in ROOMS.values()]
+    hass.states.async_set(ma("living_room"), "idle", {"group_members": everyone})
+    # same member set or real playback is not a lingering sync
+    hass.states.async_set(ma("hall"), "playing", {"group_members": everyone})
+    with (
+        patch("custom_components.homepod_tts.notify.MA_UNSYNC_TIMEOUT", 0.05),
+        patch("custom_components.homepod_tts.notify.MA_UNSYNC_POLL", 0.01),
+    ):
+        assert entity._ma_lingering_sync(everyone) == []
+        assert entity._ma_lingering_sync([ma("living_room"), ma("hall")]) == [
+            ma("living_room")
+        ]
+        await entity.async_play_tts("hello", speaker=[LIVING_ROOM, HALL])
+    assert len(entity.test_plays) == 1
