@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import logging
 
@@ -6,6 +7,10 @@ import aiohttp
 from .const import GEMINI_TTS_BASE_URL
 
 _LOGGER = logging.getLogger(__name__)
+
+# Statuses worth another try; 400 (bad key/request) fails straight away.
+RETRY_STATUSES = frozenset({403, 429, 500, 502, 503, 504})
+RETRY_DELAYS = (2, 5)
 
 
 class GeminiTTSClient:
@@ -55,13 +60,28 @@ class GeminiTTSClient:
             },
         }
 
-        async with self._session.post(url, json=payload) as resp:
-            if resp.status != 200:
-                body = await resp.text()
-                raise RuntimeError(
-                    f"Gemini TTS API returned {resp.status}: {body}"
-                )
-            data = await resp.json()
+        attempt = 0
+        while True:
+            try:
+                async with self._session.post(url, json=payload) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        break
+                    body = await resp.text()
+                    error = RuntimeError(
+                        f"Gemini TTS API returned {resp.status}: {body}"
+                    )
+                    retryable = resp.status in RETRY_STATUSES
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                error = RuntimeError(f"Gemini TTS request failed: {err!r}")
+                retryable = True
+            if not retryable or attempt >= len(RETRY_DELAYS):
+                raise error
+            # Gemini intermittently answers a valid key with 403 "A valid API
+            # key or GCP project is required" (and 429/5xx), then succeeds.
+            _LOGGER.warning("%s; retrying in %s s", error, RETRY_DELAYS[attempt])
+            await asyncio.sleep(RETRY_DELAYS[attempt])
+            attempt += 1
 
         try:
             audio_b64 = data["candidates"][0]["content"]["parts"][0][
