@@ -13,6 +13,7 @@ from pytest_homeassistant_custom_component.common import (
 )
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.homepod_tts.const import DOMAIN
@@ -116,8 +117,12 @@ async def entity(hass: HomeAssistant):
 
     plays: list[dict] = []
     streams: list[tuple[str, float]] = []
+    # MA players (or groups) that cannot be reached
+    unreachable: set[str] = set()
 
     async def fake_play_via_ma(self, wav_path, speakers, volume):
+        if unreachable & set(speakers):
+            raise HomeAssistantError("The command to the player failed.")
         with open(wav_path, "rb") as f:
             prompt = f.read().decode().split("|")[0]
         plays.append(
@@ -142,6 +147,7 @@ async def entity(hass: HomeAssistant):
         ent = hass.data[DOMAIN][entry.entry_id]["entity"]
         ent.test_plays = plays
         ent.test_streams = streams
+        ent.test_unreachable = unreachable
         ent.test_entry = entry
         yield ent
 
@@ -414,3 +420,31 @@ async def test_lingering_sync_only_delays_playback(hass, entity):
         ]
         await entity.async_play_tts("hello", speaker=[LIVING_ROOM, HALL])
     assert len(entity.test_plays) == 1
+
+
+async def test_failed_sync_group_plays_on_each_reachable_speaker(
+    hass, entity, caplog
+):
+    group = add_group(hass, "all", list(ROOMS.values()))
+    # one dead member makes MA fail the whole group start
+    entity.test_unreachable.update({group, ma("jacob")})
+    await entity.async_play_tts("hello")
+    assert sorted(p["speakers"] for p in entity.test_plays) == sorted(
+        [ma(r)] for r in ROOMS.values() if r != "jacob"
+    )
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert errors == [
+        "TTS played on 3 of 4 speakers, failed on: "
+        + hass.states.get(ma("jacob")).name
+    ]
+
+
+async def test_failed_sync_group_with_no_reachable_speaker_reports_failure(
+    hass, entity, caplog
+):
+    group = add_group(hass, "all", list(ROOMS.values()))
+    entity.test_unreachable.update({group, *(ma(r) for r in ROOMS.values())})
+    await entity.async_play_tts("hello")
+    assert entity.test_plays == []
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert errors == ["Failed to play TTS on a speaker group"]

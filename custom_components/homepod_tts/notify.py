@@ -776,6 +776,46 @@ class HomePodTTSNotifyEntity(NotifyEntity):
 
         return str(served_path)
 
+    async def _async_play_via_ma_each(
+        self,
+        wav_path: str,
+        speakers: list[str],
+        volume: float,
+    ) -> None:
+        """Announce on each speaker separately, so a dead one loses only its room.
+
+        Fallback for a sync group that failed to start: the rooms are not
+        synchronized, but every reachable one plays. Raises when none did.
+        """
+
+        async def _play_one(speaker: str) -> None:
+            # The failed group stays synced for MA's idle grace; announcing
+            # into it would replay the clip on the other members.
+            await self._async_wait_ma_unsynced([speaker])
+            await self._async_play_via_ma(wav_path, [speaker], volume)
+
+        results = await asyncio.gather(
+            *(_play_one(s) for s in speakers), return_exceptions=True
+        )
+        errors = [r for r in results if isinstance(r, BaseException)]
+        if len(errors) == len(speakers):
+            raise errors[0]
+        if errors:
+            failed = [
+                self._speaker_name(s)
+                for s, r in zip(speakers, results)
+                if isinstance(r, BaseException)
+            ]
+            _LOGGER.error(
+                "TTS played on %d of %d speakers, failed on: %s",
+                len(speakers) - len(errors), len(speakers), ", ".join(failed),
+            )
+
+    def _speaker_name(self, entity_id: str) -> str:
+        """Return a speaker's friendly name for log messages."""
+        state = self._hass.states.get(entity_id)
+        return state.name if state else entity_id
+
     # -- pyatv connections (fallback) --
 
     def _resolve_speaker_identifier(
@@ -1156,7 +1196,20 @@ class HomePodTTSNotifyEntity(NotifyEntity):
                     _LOGGER.debug(
                         "Using MA sync group %s for %s", group, ma_speakers
                     )
-                    ma_speakers = [group]
+                    try:
+                        await self._async_play_via_ma(wav_path, [group], volume)
+                        return
+                    except Exception as err:  # noqa: BLE001
+                        # MA starts a sync group all-or-nothing, so one
+                        # unreachable member would silence every room.
+                        _LOGGER.warning(
+                            "MA sync group %s failed to start (%s), playing on"
+                            " each speaker separately", group, err,
+                        )
+                    await self._async_play_via_ma_each(
+                        wav_path, ma_speakers, volume
+                    )
+                    return
                 await self._async_play_via_ma(wav_path, ma_speakers, volume)
                 return
             _LOGGER.error(
