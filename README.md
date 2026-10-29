@@ -305,6 +305,14 @@ group formed on the same speakers inside that window would inherit the old membe
 leak the clip into rooms that were not targeted, so before each Music Assistant delivery
 the integration waits (up to 12 s) until the target speakers are free of an earlier sync.
 
+Music Assistant starts a sync group all-or-nothing: if one member cannot be reached
+(e.g. a HomePod that dropped off Wi-Fi), the announcement fails in every room. When a
+sync group fails to start, the integration announces on each member separately instead
+(not synchronized, after the failed group has dissolved), so only the unreachable room
+misses the clip. A partial delivery is logged as an ERROR naming the failed speakers
+(`TTS played on 3 of 4 speakers, failed on: ...`); if no speaker plays, the original
+error is raised as before.
+
 ## Music Assistant Health Sensor
 
 When **default speakers** are configured, the integration adds a sensor (e.g. `sensor.<name>_ma_health`) that reports whether Music Assistant can serve all of them. This makes it easy to spot when playback has silently fallen back to pyatv - for example after an HA restart before Music Assistant has reconnected.
