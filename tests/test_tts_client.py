@@ -80,8 +80,17 @@ async def test_gives_up_after_retries(no_sleep):
     assert [c.args[0] for c in no_sleep.await_args_list] == [2, 5]
 
 
-async def test_400_fails_without_retry():
-    session = FakeSession(FakeResponse(400, "API key not valid"))
+async def test_transient_400_then_success():
+    session = FakeSession(
+        FakeResponse(400, "Request contains an invalid argument."),
+        FakeResponse(200, OK_BODY),
+    )
+    assert await GeminiTTSClient("k", session).synthesize("hi") == AUDIO
+    assert session.calls == 2
+
+
+async def test_400_is_retried_only_once():
+    session = FakeSession(*(FakeResponse(400, "API key not valid") for _ in range(2)))
     with pytest.raises(RuntimeError, match="returned 400"):
         await GeminiTTSClient("k", session).synthesize("hi")
-    assert session.calls == 1
+    assert session.calls == 2
