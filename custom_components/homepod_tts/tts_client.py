@@ -8,8 +8,11 @@ from .const import GEMINI_TTS_BASE_URL
 
 _LOGGER = logging.getLogger(__name__)
 
-# Statuses worth another try; 400 (bad key/request) fails straight away.
+# Statuses worth another try. 400 gets a single retry: Gemini sometimes
+# rejects a valid request with "INVALID_ARGUMENT" and accepts the same one
+# seconds later, while a genuinely bad key/request just fails again.
 RETRY_STATUSES = frozenset({403, 429, 500, 502, 503, 504})
+RETRY_400_ATTEMPTS = 1
 RETRY_DELAYS = (2, 5)
 
 
@@ -71,7 +74,9 @@ class GeminiTTSClient:
                     error = RuntimeError(
                         f"Gemini TTS API returned {resp.status}: {body}"
                     )
-                    retryable = resp.status in RETRY_STATUSES
+                    retryable = resp.status in RETRY_STATUSES or (
+                        resp.status == 400 and attempt < RETRY_400_ATTEMPTS
+                    )
             except (aiohttp.ClientError, asyncio.TimeoutError) as err:
                 error = RuntimeError(f"Gemini TTS request failed: {err!r}")
                 retryable = True
