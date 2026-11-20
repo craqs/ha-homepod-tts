@@ -69,6 +69,7 @@ from .const import (
     DOMAIN,
     GEMINI_TTS_MODELS,
     GEMINI_VOICES,
+    RETIRED_TTS_MODELS,
 )
 from .tts_client import GeminiTTSClient
 
@@ -180,7 +181,11 @@ class HomePodTTSOptionsFlow(OptionsFlow):
             {
                 vol.Optional(
                     CONF_TTS_MODEL,
-                    default=options.get(CONF_TTS_MODEL, DEFAULT_TTS_MODEL),
+                    default=(
+                        DEFAULT_TTS_MODEL
+                        if options.get(CONF_TTS_MODEL) in RETIRED_TTS_MODELS
+                        else options.get(CONF_TTS_MODEL, DEFAULT_TTS_MODEL)
+                    ),
                 ): SelectSelector(
                     SelectSelectorConfig(
                         options=GEMINI_TTS_MODELS,

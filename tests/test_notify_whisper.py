@@ -448,3 +448,15 @@ async def test_failed_sync_group_with_no_reachable_speaker_reports_failure(
     assert entity.test_plays == []
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
     assert errors == ["Failed to play TTS on a speaker group"]
+
+
+async def test_retired_preview_model_falls_back_to_default(hass, entity):
+    entry = entity.test_entry
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "tts_model": "gemini-3.1-flash-tts-preview"}
+    )
+    assert entity._model == "gemini-3.8-flash-tts"
+    hass.config_entries.async_update_entry(
+        entry, options={**entry.options, "tts_model": "gemini-3.8-flash-lite-tts"}
+    )
+    assert entity._model == "gemini-3.8-flash-lite-tts"

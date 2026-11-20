@@ -30,7 +30,7 @@ DEFAULT_CHIME_VOLUME = 1.0
 DEFAULT_VOLUME = 0.5
 DEFAULT_RESTORE_VOLUME = True
 DEFAULT_TTS_VOICE = "Aoede"
-DEFAULT_TTS_MODEL = "gemini-2.5-flash-preview-tts"
+DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts"
 DEFAULT_TTS_PROMPT = ""
 DEFAULT_COMPRESS_TTS = "moderate"
 DEFAULT_CHIME_OFFSET = 0
@@ -50,10 +50,17 @@ GEMINI_TTS_BASE_URL = (
 )
 
 GEMINI_TTS_MODELS = [
+    "gemini-3.8-flash-tts",
+    "gemini-3.8-flash-lite-tts",
+]
+
+# Preview TTS models Google shuts down on 2026-12-18. An entry still set to one
+# of them is served by the current default instead of failing every call.
+RETIRED_TTS_MODELS = {
     "gemini-2.5-flash-preview-tts",
     "gemini-2.5-pro-preview-tts",
     "gemini-3.1-flash-tts-preview",
-]
+}
 
 GEMINI_VOICES = [
     "Achernar", "Achird", "Algenib", "Algieba", "Alnilam",
