@@ -65,7 +65,7 @@ This integration **bypasses the bug entirely** by:
 
 | Option | Default | Description |
 |---|---|---|
-| TTS model | gemini-2.5-flash-preview-tts | Gemini model for speech synthesis |
+| TTS model | gemini-3.8-flash-tts | Gemini model for speech synthesis |
 | TTS voice | Aoede | One of 30 Gemini TTS voices |
 | Style prompt | _(empty)_ | Default style instruction (e.g. "Say this calmly") |
 | Chime | On | Play chime sound before announcement |
@@ -234,9 +234,12 @@ Lyria 3 MP3 (optional, from [music:] marker or play_music service) ────�
 
 | Model | Description |
 |---|---|
-| `gemini-2.5-flash-preview-tts` | Low-latency, good quality (default) |
-| `gemini-2.5-pro-preview-tts` | Higher fidelity, slower |
-| `gemini-3.1-flash-tts-preview` | Latest generation, 70+ languages |
+| `gemini-3.8-flash-tts` | Current generation, good quality (default) |
+| `gemini-3.8-flash-lite-tts` | Faster and cheaper |
+
+The preview models (`gemini-2.5-flash-preview-tts`, `gemini-2.5-pro-preview-tts`,
+`gemini-3.1-flash-tts-preview`) are shut down by Google on 2026-12-18. An entry still set to
+one of them uses the default model instead.
 
 ## Quiet Mode & Mute
 

@@ -69,6 +69,7 @@ from .const import (
     DEFAULT_VOLUME,
     DOMAIN,
     MINI_SPEAKER_LABEL,
+    RETIRED_TTS_MODELS,
 )
 from .tts_client import GeminiTTSClient
 from .whisper import normalize_mac, parse_speaker_list, partition_speakers
@@ -225,7 +226,8 @@ class HomePodTTSNotifyEntity(NotifyEntity):
 
     @property
     def _model(self) -> str:
-        return self._entry.options.get(CONF_TTS_MODEL, DEFAULT_TTS_MODEL)
+        model = self._entry.options.get(CONF_TTS_MODEL, DEFAULT_TTS_MODEL)
+        return DEFAULT_TTS_MODEL if model in RETIRED_TTS_MODELS else model
 
     @property
     def _default_prompt(self) -> str:

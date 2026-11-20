@@ -23,7 +23,7 @@ class GeminiTTSClient:
         api_key: str,
         session: aiohttp.ClientSession,
         voice: str = "Aoede",
-        model: str = "gemini-2.5-flash-preview-tts",
+        model: str = "gemini-3.8-flash-tts",
     ) -> None:
         self._api_key = api_key
         self._session = session
