@@ -1,6 +1,8 @@
 import asyncio
 import base64
+import io
 import logging
+import wave
 
 import aiohttp
 
@@ -14,6 +16,29 @@ _LOGGER = logging.getLogger(__name__)
 RETRY_STATUSES = frozenset({403, 429, 500, 502, 503, 504})
 RETRY_400_ATTEMPTS = 1
 RETRY_DELAYS = (2, 5)
+
+
+def with_style_tag(prompt: str | None, text: str) -> str:
+    """Put a style prompt in front of the text as a bracketed audio tag.
+
+    Gemini 3.8 TTS reads a "prompt: text" prefix aloud; a "[prompt]" tag
+    steers the delivery without being spoken.
+    """
+    prompt = (prompt or "").strip().rstrip(":. ").strip("[] ")
+    return f"[{prompt}] {text}" if prompt else text
+
+
+def to_pcm(audio: bytes) -> bytes:
+    """Return raw s16le PCM, unwrapping a WAV container if Gemini sent one.
+
+    The preview models returned bare PCM (audio/l16); gemini-3.8 returns a
+    WAV file whose trailing metadata chunk played as a burst of noise when
+    the whole file was treated as PCM.
+    """
+    if audio[:4] != b"RIFF" or audio[8:12] != b"WAVE":
+        return audio
+    with wave.open(io.BytesIO(audio)) as wav:
+        return wav.readframes(wav.getnframes())
 
 
 class GeminiTTSClient:
@@ -46,10 +71,7 @@ class GeminiTTSClient:
     ) -> bytes:
         url = f"{GEMINI_TTS_BASE_URL}{self._model}:generateContent?key={self._api_key}"
 
-        if prompt:
-            full_text = f"{prompt}: {text}"
-        else:
-            full_text = text
+        full_text = with_style_tag(prompt, text)
 
         payload = {
             "contents": [{"parts": [{"text": full_text}]}],
@@ -101,7 +123,7 @@ class GeminiTTSClient:
                 f"promptFeedback={data.get('promptFeedback')}, missing {err})"
             ) from err
 
-        return base64.b64decode(audio_b64)
+        return to_pcm(base64.b64decode(audio_b64))
 
     async def generate_music(self, prompt: str) -> bytes:
         """Generate music via Gemini Lyria 3 API. Returns MP3 bytes."""

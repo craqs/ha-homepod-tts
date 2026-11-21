@@ -17,7 +17,7 @@ This integration **bypasses the bug entirely** by:
 - **Music injection** - embed a `[music: prompt]` marker in any message to append a generated Lyria 3 music clip
 - **`play_music` service** - generate and play standalone AI music via Gemini Lyria 3
 - Google Gemini TTS with selectable model and voice (30 voices)
-- Style prompts for controlling speech tone and pacing
+- Style prompts for controlling speech tone and pacing (sent as a `[prompt]` audio tag in front of the text, so the model follows it without reading it aloud)
 - Dynamic range compression presets (off / light / moderate / heavy)
 - Adjustable chime volume relative to TTS in the audio mix
 - Speaker override - target any HomePod(s) from a single entity

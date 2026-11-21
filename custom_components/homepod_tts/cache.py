@@ -23,7 +23,8 @@ def cache_key(
     model: str,
     prompt: str,
 ) -> str:
-    raw = f"{model}|{voice}|{prompt}|{message}"
+    # "pcm2": clips cached before WAV unwrapping (v0.4.0) hold WAV bytes
+    raw = f"pcm2|{model}|{voice}|{prompt}|{message}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
