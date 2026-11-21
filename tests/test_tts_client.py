@@ -1,12 +1,18 @@
 """Retry behaviour of GeminiTTSClient.synthesize."""
 
 import base64
+import io
+import wave
 from unittest.mock import AsyncMock, patch
 
 import aiohttp
 import pytest
 
-from custom_components.homepod_tts.tts_client import GeminiTTSClient
+from custom_components.homepod_tts.tts_client import (
+    GeminiTTSClient,
+    to_pcm,
+    with_style_tag,
+)
 
 AUDIO = b"pcm"
 OK_BODY = {
@@ -94,3 +100,23 @@ async def test_400_is_retried_only_once():
     with pytest.raises(RuntimeError, match="returned 400"):
         await GeminiTTSClient("k", session).synthesize("hi")
     assert session.calls == 2
+
+
+def test_style_prompt_becomes_bracket_tag():
+    assert with_style_tag("Powiedz to radośnie", "Dzień dobry") == "[Powiedz to radośnie] Dzień dobry"
+    assert with_style_tag("[cheerfully]:", "Hi") == "[cheerfully] Hi"
+    assert with_style_tag("", "Hi") == "Hi"
+    assert with_style_tag(None, "Hi") == "Hi"
+
+
+def test_wav_response_is_unwrapped_to_pcm():
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(24000)
+        wav.writeframes(b"\x01\x00\x02\x00")
+    # trailing metadata chunk, like gemini-3.8's provenance tag
+    data = buf.getvalue() + b"LIST\x08\x00\x00\x00metadata"
+    assert to_pcm(data) == b"\x01\x00\x02\x00"
+    assert to_pcm(b"raw-pcm") == b"raw-pcm"
