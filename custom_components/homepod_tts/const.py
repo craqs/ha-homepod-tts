@@ -45,6 +45,9 @@ DEFAULT_MINI_VOLUME_SCALE = 1.0
 # HA label slug the user assigns to HomePod mini media_player entities
 MINI_SPEAKER_LABEL = "homepod_mini"
 
+GEMINI_INTERACTIONS_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/interactions"
+)
 GEMINI_TTS_BASE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
 )

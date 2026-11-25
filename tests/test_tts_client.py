@@ -11,13 +11,16 @@ import pytest
 from custom_components.homepod_tts.tts_client import (
     GeminiTTSClient,
     to_pcm,
-    with_style_tag,
 )
 
 AUDIO = b"pcm"
 OK_BODY = {
-    "candidates": [
-        {"content": {"parts": [{"inlineData": {"data": base64.b64encode(AUDIO).decode()}}]}}
+    "steps": [
+        {"type": "user_input"},
+        {
+            "type": "model_output",
+            "content": [{"type": "audio", "data": base64.b64encode(AUDIO).decode()}],
+        },
     ]
 }
 
@@ -46,9 +49,11 @@ class FakeSession:
     def __init__(self, *responses):
         self._responses = list(responses)
         self.calls = 0
+        self.payloads = []
 
-    def post(self, url, json):
+    def post(self, url, json, headers=None):
         self.calls += 1
+        self.payloads.append(json)
         item = self._responses.pop(0)
         if isinstance(item, Exception):
             raise item
@@ -102,11 +107,23 @@ async def test_400_is_retried_only_once():
     assert session.calls == 2
 
 
-def test_style_prompt_becomes_bracket_tag():
-    assert with_style_tag("Powiedz to radośnie", "Dzień dobry") == "[Powiedz to radośnie] Dzień dobry"
-    assert with_style_tag("[cheerfully]:", "Hi") == "[cheerfully] Hi"
-    assert with_style_tag("", "Hi") == "Hi"
-    assert with_style_tag(None, "Hi") == "Hi"
+async def test_style_goes_in_speech_metadata_not_in_text():
+    session = FakeSession(FakeResponse(200, OK_BODY), FakeResponse(200, OK_BODY))
+    client = GeminiTTSClient("k", session)
+    assert await client.synthesize("Dzień dobry", prompt="Powiedz to z radością") == AUDIO
+    await client.synthesize("Hi", prompt="  ")
+    styled, plain = (p["input"][0]["content"][0] for p in session.payloads)
+    assert styled["text"] == "Dzień dobry"
+    assert styled["annotations"] == [
+        {"type": "speech_metadata", "style": "Powiedz to z radością"}
+    ]
+    assert plain == {"type": "text", "text": "Hi"}
+
+
+async def test_no_audio_part_raises():
+    session = FakeSession(FakeResponse(200, {"steps": [{"type": "model_output", "content": []}]}))
+    with pytest.raises(RuntimeError, match="No audio"):
+        await GeminiTTSClient("k", session).synthesize("hi")
 
 
 def test_wav_response_is_unwrapped_to_pcm():
