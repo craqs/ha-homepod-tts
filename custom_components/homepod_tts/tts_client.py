@@ -6,7 +6,7 @@ import wave
 
 import aiohttp
 
-from .const import GEMINI_TTS_BASE_URL
+from .const import GEMINI_INTERACTIONS_URL
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -16,16 +16,6 @@ _LOGGER = logging.getLogger(__name__)
 RETRY_STATUSES = frozenset({403, 429, 500, 502, 503, 504})
 RETRY_400_ATTEMPTS = 1
 RETRY_DELAYS = (2, 5)
-
-
-def with_style_tag(prompt: str | None, text: str) -> str:
-    """Put a style prompt in front of the text as a bracketed audio tag.
-
-    Gemini 3.8 TTS reads a "prompt: text" prefix aloud; a "[prompt]" tag
-    steers the delivery without being spoken.
-    """
-    prompt = (prompt or "").strip().rstrip(":. ").strip("[] ")
-    return f"[{prompt}] {text}" if prompt else text
 
 
 def to_pcm(audio: bytes) -> bytes:
@@ -69,26 +59,28 @@ class GeminiTTSClient:
         *,
         prompt: str | None = None,
     ) -> bytes:
-        url = f"{GEMINI_TTS_BASE_URL}{self._model}:generateContent?key={self._api_key}"
-
-        full_text = with_style_tag(prompt, text)
-
+        # gemini-3.8 TTS reads the text field verbatim: a style written into
+        # it ("prompt: text" or a "[prompt]" tag) is often spoken aloud. The
+        # Interactions API carries the style separately as speech_metadata.
+        item = {"type": "text", "text": text}
+        style = (prompt or "").strip()
+        if style:
+            item["annotations"] = [{"type": "speech_metadata", "style": style}]
         payload = {
-            "contents": [{"parts": [{"text": full_text}]}],
-            "generationConfig": {
-                "responseModalities": ["AUDIO"],
-                "speechConfig": {
-                    "voiceConfig": {
-                        "prebuiltVoiceConfig": {"voiceName": self._voice}
-                    }
-                },
-            },
+            "model": self._model,
+            "input": [{"type": "user_input", "content": [item]}],
+            "response_format": {"type": "audio"},
+            "generation_config": {"speech_config": [{"voice": self._voice}]},
         }
+        url = GEMINI_INTERACTIONS_URL
+        headers = {"x-goog-api-key": self._api_key}
 
         attempt = 0
         while True:
             try:
-                async with self._session.post(url, json=payload) as resp:
+                async with self._session.post(
+                    url, json=payload, headers=headers
+                ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         break
@@ -110,18 +102,19 @@ class GeminiTTSClient:
             await asyncio.sleep(RETRY_DELAYS[attempt])
             attempt += 1
 
-        try:
-            audio_b64 = data["candidates"][0]["content"]["parts"][0][
-                "inlineData"
-            ]["data"]
-        except (KeyError, IndexError) as err:
-            # e.g. finishReason SAFETY: a candidate with empty content
-            candidates = data.get("candidates") or [{}]
+        audio = [
+            part
+            for step in data.get("steps") or []
+            if step.get("type") == "model_output"
+            for part in step.get("content") or []
+            if part.get("type") == "audio" and part.get("data")
+        ]
+        if not audio:
+            # e.g. a safety refusal: no audio part in the output
             raise RuntimeError(
-                "No audio in Gemini TTS response "
-                f"(finishReason={candidates[0].get('finishReason')}, "
-                f"promptFeedback={data.get('promptFeedback')}, missing {err})"
-            ) from err
+                f"No audio in Gemini TTS response: {str(data)[:300]}"
+            )
+        audio_b64 = audio[-1]["data"]
 
         return to_pcm(base64.b64decode(audio_b64))
 
